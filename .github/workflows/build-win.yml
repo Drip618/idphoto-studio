@@ -29,7 +29,10 @@ jobs:
         run: pyinstaller win_app.spec --noconfirm --clean --distpath dist --workpath build
 
       - name: 安装 NSIS
-        run: choco install nsis -y
+        run: |
+          choco install nsis -y
+          # choco 装完不会自动刷新当前 shell 的 PATH，需手动把 bin 目录加进去
+          echo "C:\ProgramData\chocolatey\bin" >> $env:GITHUB_PATH
 
       - name: 封装安装器
         run: makensis build_win.nsi
