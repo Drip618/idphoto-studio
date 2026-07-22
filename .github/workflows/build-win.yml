@@ -1,0 +1,43 @@
+# Build Windows Installer — 在云端 Windows 上自动打包，Mac 上只管 push 代码
+# 触发：手动点 Run workflow，或 push 到 main/master
+# 产物：证件照工作室_Setup.exe（安装版）+ dist/证件照工作室/（绿色免安装版）
+name: Build Windows Installer
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+jobs:
+  build-win:
+    runs-on: windows-latest
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 配置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: PyInstaller 打包
+        run: pyinstaller win_app.spec --noconfirm --clean --distpath dist --workpath build
+
+      - name: 安装 NSIS
+        run: choco install nsis -y
+
+      - name: 封装安装器
+        run: makensis build_win.nsi
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: 证件照工作室-Windows
+          path: |
+            证件照工作室_Setup.exe
+            dist/证件照工作室/

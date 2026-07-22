@@ -1,0 +1,22 @@
+# 打包产物（体积大，且每次构建都会重新生成）
+dist/
+build/
+# 注：win_app.spec / app.spec 是打包配置，需保留（不要加 *.spec 忽略规则）
+__pycache__/
+*.pyc
+*.egg-info/
+
+# 环境与缓存
+.venv/
+venv/
+env/
+
+# 系统/工具文件
+.DS_Store
+Thumbs.db
+
+# 项目内部数据（非源码）
+.workbuddy/
+
+# Windows 手动构建包（GitHub Actions 不需要，避免与根目录源码重复）
+windows-kit/
