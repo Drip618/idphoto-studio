@@ -27,6 +27,8 @@ USER_WEIGHTS_DIR = os.path.join(USER_CONFIG_DIR, "weights")
 DPI = 300
 PX_PER_MM = DPI / 25.4
 
+MODEL_NAME = "modnet_photographic_portrait_matting.onnx"
+
 
 def mm_to_px(mm):
     return int(round(mm * PX_PER_MM))
@@ -293,16 +295,25 @@ class Matting:
 
     @staticmethod
     def _locate_model():
-        # 打包后优先用包内模型（开箱即用，无需用户自行下载）
+        """三级回退找模型：包内 _MEIPASS → 项目 weights → 用户目录。任一命中即用。"""
+        cands = Matting.model_search_paths()
+        for p in cands:
+            if os.path.exists(p):
+                return p
+        # 全没有，返回用户目录路径（available() 判 False，给清晰提示）
+        return cands[-1]
+
+    @staticmethod
+    def model_search_paths():
+        """返回所有查找路径，用于错误诊断。"""
+        paths = []
         if getattr(sys, "frozen", False):
             base = getattr(sys, "_MEIPASS", None)
             if base:
-                p = os.path.join(base, "weights",
-                                 "modnet_photographic_portrait_matting.onnx")
-                if os.path.exists(p):
-                    return p
-        # 开发态 / 用户目录兜底
-        return os.path.join(USER_WEIGHTS_DIR, "modnet_photographic_portrait_matting.onnx")
+                paths.append(os.path.join(base, "weights", MODEL_NAME))
+        paths.append(os.path.join(PROJECT_ROOT, "weights", MODEL_NAME))
+        paths.append(os.path.join(USER_WEIGHTS_DIR, MODEL_NAME))
+        return paths
 
     def available(self):
         return os.path.exists(self.model_path)
@@ -311,9 +322,10 @@ class Matting:
         if self._session is not None:
             return self._session
         if not self.available():
+            searched = "\n".join("  - " + p for p in self.model_search_paths())
             raise RuntimeError(
-                "未找到抠图模型：%s\n请先运行 download_models.py 下载模型（约 25MB）。\n"
-                "或选择「不换背景」仅做排版。" % self.model_path)
+                "未找到抠图模型，已依次查找：\n%s\n"
+                "请选择「不换背景」仅做排版，或重新安装应用。" % searched)
         import onnxruntime as ort
         self._session = ort.InferenceSession(self.model_path,
                                              providers=["CPUExecutionProvider"])
@@ -428,15 +440,20 @@ def prepare_id_photo(image, id_w_px, id_h_px, bg_rgb, matting=None):
     image = image.convert("RGBA") if image.mode != "RGBA" else image.copy()
 
     if bg_rgb is not None and matting is not None:
+        # 抠图失败不再静默吞；抛 MattingError 让上层决定降级还是报错
         try:
             rgba = matting.remove(image)
-            return _center_crop_by_subject(rgba, id_w_px, id_h_px, bg_rgb)
-        except Exception:
-            # 抠图失败则退化为原图居中裁切
-            pass
+        except Exception as e:
+            raise MattingError("抠图失败：%s" % e)
+        return _center_crop_by_subject(rgba, id_w_px, id_h_px, bg_rgb)
 
     img = image.convert("RGB")
     return _center_crop(img, id_w_px, id_h_px)
+
+
+class MattingError(RuntimeError):
+    """抠图专用异常，界面层可据此降级为「不换背景」并提示用户。"""
+    pass
 
 
 def _luminance(rgb):

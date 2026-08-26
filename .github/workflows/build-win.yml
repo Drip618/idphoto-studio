@@ -1,7 +1,6 @@
-# Build Windows Installer — 在云端 Windows 上自动打包，Mac 上只管 push 代码
-# 触发：手动点 Run workflow，或 push 到 main/master
-# 产物：证件照工作室_Setup.exe（安装版）+ dist/证件照工作室/（绿色免安装版）
-name: Build Windows Installer
+# Build Windows — 云端 Windows 自动打包，Mac 上只管 push 代码
+# 产物：绿色免安装 zip（必出）+ NSIS 安装器（可选，失败不阻断）
+name: Build Windows
 
 on:
   workflow_dispatch:
@@ -28,19 +27,32 @@ jobs:
       - name: PyInstaller 打包
         run: pyinstaller win_app.spec --noconfirm --clean --distpath dist --workpath build
 
-      - name: 安装 NSIS
+      - name: 打包绿色版 zip（必出）
         run: |
-          choco install nsis -y
-          # choco 装完不会自动刷新当前 shell 的 PATH，需手动把 bin 目录加进去
-          echo "C:\ProgramData\chocolatey\bin" >> $env:GITHUB_PATH
+          cd dist
+          Compress-Archive -Path 证件照工作室 -DestinationPath ../证件照工作室_Win绿色版.zip
+          cd ..
 
-      - name: 封装安装器
-        run: makensis build_win.nsi
-
-      - name: 上传产物
+      - name: 上传绿色版 zip
         uses: actions/upload-artifact@v4
         with:
-          name: 证件照工作室-Windows
-          path: |
-            证件照工作室_Setup.exe
-            dist/证件照工作室/
+          name: 证件照工作室-Win绿色版
+          path: 证件照工作室_Win绿色版.zip
+
+      - name: 安装 NSIS（可选）
+        continue-on-error: true
+        run: choco install nsis -y
+
+      - name: 封装安装器（可选，失败不阻断）
+        continue-on-error: true
+        run: |
+          $nsis = "C:\Program Files (x86)\NSIS\makensis.exe"
+          if (Test-Path $nsis) { & $nsis build_win.nsi } else { & makensis build_win.nsi }
+
+      - name: 上传安装器（若有）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 证件照工作室-Win安装器
+          path: 证件照工作室_Setup.exe
+          if-no-files-found: ignore
