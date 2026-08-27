@@ -6,16 +6,17 @@ ui/main_window.py — 证件照工作室 macOS / Windows 工业级原生桌面�
 - 默认进入单张证件照模式，导入照片与换底色绝不自作主张排版
 - 相纸排序 5寸/6寸 置顶，从小到大规范排列
 - 照相馆黄金对称混排 + 自由多尺寸自定义混排装箱引擎（带相纸容量超限检测）
+- 新增「✂️ 手动选区/裁剪人像」交互式工具：支持合影多人物框选与复杂背景精确定位
 - 预览区浅灰精致边框，白底照片绝不融为一体
 - 底部操作栏固定无闪烁，支持用户自主选择导出格式 (PNG / JPG / 两种都要)
 """
 
 import os
 import sys
-from PySide6.QtCore import Qt, Signal, QThread, QSettings, QTimer, QSize
+from PySide6.QtCore import Qt, Signal, QThread, QSettings, QTimer, QSize, QRect, QPoint
 from PySide6.QtGui import (
     QImage, QPixmap, QColor, QPalette, QDragEnterEvent, QDropEvent,
-    QIcon, QPainter, QPen
+    QIcon, QPainter, QPen, QBrush, QMouseEvent
 )
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -26,6 +27,8 @@ from PySide6.QtWidgets import (
 )
 
 from core import idphoto_core as core
+
+PROJECT_ROOT = core.PROJECT_ROOT
 
 QSS = """
 QMainWindow, QWidget {
@@ -182,18 +185,196 @@ def pil_to_qimage(img):
     return QImage(data, w, h, w * 3, QImage.Format_RGB888)
 
 
+# ============================================================ 交互式人像手动选区/裁剪弹窗
+class CropWidget(QWidget):
+    def __init__(self, pil_image, aspect_ratio=25.0/35.0, parent=None):
+        super().__init__(parent)
+        self.pil_image = pil_image
+        self.aspect_ratio = aspect_ratio # 目标宽高比 (w / h)
+        self.qimage = pil_to_qimage(pil_image)
+        self.pixmap = QPixmap.fromImage(self.qimage)
+
+        # 裁剪框在原图坐标系中的比例 (0.0 ~ 1.0)
+        # 默认框选中央 70% 区域
+        crop_h = 0.85
+        crop_w = crop_h * self.aspect_ratio * (pil_image.size[1] / pil_image.size[0])
+        if crop_w > 0.95:
+            crop_w = 0.95
+            crop_h = crop_w / self.aspect_ratio * (pil_image.size[0] / pil_image.size[1])
+
+        self.rel_x = (1.0 - crop_w) / 2.0
+        self.rel_y = 0.05
+        self.rel_w = crop_w
+        self.rel_h = crop_h
+
+        self.dragging = False
+        self.resizing = False
+        self.drag_start = QPoint()
+
+    def get_cropped_pil_image(self):
+        orig_w, orig_h = self.pil_image.size
+        x1 = max(0, int(round(self.rel_x * orig_w)))
+        y1 = max(0, int(round(self.rel_y * orig_h)))
+        x2 = min(orig_w, int(round((self.rel_x + self.rel_w) * orig_w)))
+        y2 = min(orig_h, int(round((self.rel_y + self.rel_h) * orig_h)))
+        return self.pil_image.crop((x1, y1, x2, y2))
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        # 绘制背景
+        painter.fillRect(self.rect(), QColor("#1e293b"))
+
+        # 计算图片居中绘制区域
+        vw, vh = self.width(), self.height()
+        scaled_pix = self.pixmap.scaled(vw, vh, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self.img_rect = QRect((vw - scaled_pix.width()) // 2, (vh - scaled_pix.height()) // 2,
+                              scaled_pix.width(), scaled_pix.height())
+        painter.drawPixmap(self.img_rect.topLeft(), scaled_pix)
+
+        # 计算选区在视窗中的像素矩形
+        cx = self.img_rect.x() + int(self.rel_x * self.img_rect.width())
+        cy = self.img_rect.y() + int(self.rel_y * self.img_rect.height())
+        cw = int(self.rel_w * self.img_rect.width())
+        ch = int(self.rel_h * self.img_rect.height())
+        self.crop_rect = QRect(cx, cy, cw, ch)
+
+        # 绘制半透明黑色蒙版 (选区外)
+        mask_color = QColor(0, 0, 0, 160)
+        # 上
+        painter.fillRect(QRect(0, 0, vw, cy), mask_color)
+        # 下
+        painter.fillRect(QRect(0, cy + ch, vw, vh - (cy + ch)), mask_color)
+        # 左
+        painter.fillRect(QRect(0, cy, cx, ch), mask_color)
+        # 右
+        painter.fillRect(QRect(cx + cw, cy, vw - (cx + cw), ch), mask_color)
+
+        # 绘制亮蓝色裁剪框与九宫格参考线
+        pen = QPen(QColor("#3b82f6"), 2)
+        painter.setPen(pen)
+        painter.drawRect(self.crop_rect)
+
+        # 九宫格参考线 (辅助构图)
+        pen_grid = QPen(QColor(255, 255, 255, 100), 1, Qt.DashLine)
+        painter.setPen(pen_grid)
+        painter.drawLine(cx + cw // 3, cy, cx + cw // 3, cy + ch)
+        painter.drawLine(cx + 2 * cw // 3, cy, cx + 2 * cw // 3, cy + ch)
+        painter.drawLine(cx, cy + ch // 3, cx + cw, cy + ch // 3)
+        painter.drawLine(cx, cy + 2 * ch // 3, cx + cw, cy + 2 * ch // 3)
+
+        # 绘制四角控制手柄
+        painter.setBrush(QColor("#ffffff"))
+        painter.setPen(QPen(QColor("#2563eb"), 2))
+        handle_size = 8
+        painter.drawRect(cx - handle_size//2, cy - handle_size//2, handle_size, handle_size)
+        painter.drawRect(cx + cw - handle_size//2, cy - handle_size//2, handle_size, handle_size)
+        painter.drawRect(cx - handle_size//2, cy + ch - handle_size//2, handle_size, handle_size)
+        painter.drawRect(cx + cw - handle_size//2, cy + ch - handle_size//2, handle_size, handle_size)
+
+    def mousePressEvent(self, event: QMouseEvent):
+        if hasattr(self, "crop_rect"):
+            pos = event.pos()
+            # 检查是否点击右下角手柄 (缩放)
+            br_handle = QRect(self.crop_rect.right() - 15, self.crop_rect.bottom() - 15, 30, 30)
+            if br_handle.contains(pos):
+                self.resizing = True
+                self.drag_start = pos
+                return
+
+            # 检查是否点击选区内部 (拖拽平移)
+            if self.crop_rect.contains(pos):
+                self.dragging = True
+                self.drag_start = pos
+
+    def mouseMoveEvent(self, event: QMouseEvent):
+        if not hasattr(self, "img_rect") or self.img_rect.width() == 0:
+            return
+
+        if self.dragging:
+            delta = event.pos() - self.drag_start
+            self.drag_start = event.pos()
+
+            dx_rel = delta.x() / self.img_rect.width()
+            dy_rel = delta.y() / self.img_rect.height()
+
+            self.rel_x = max(0.0, min(1.0 - self.rel_w, self.rel_x + dx_rel))
+            self.rel_y = max(0.0, min(1.0 - self.rel_h, self.rel_y + dy_rel))
+            self.update()
+
+        elif self.resizing:
+            delta = event.pos() - self.drag_start
+            self.drag_start = event.pos()
+
+            dw_rel = delta.x() / self.img_rect.width()
+            new_w = max(0.15, min(1.0 - self.rel_x, self.rel_w + dw_rel))
+            # 维持比例
+            new_h = new_w / self.aspect_ratio * (self.pil_image.size[0] / self.pil_image.size[1])
+            if self.rel_y + new_h <= 1.0:
+                self.rel_w = new_w
+                self.rel_h = new_h
+                self.update()
+
+    def mouseReleaseEvent(self, event: QMouseEvent):
+        self.dragging = False
+        self.resizing = False
+
+
+class CropDialog(QDialog):
+    def __init__(self, pil_image, aspect_ratio=25.0/35.0, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("✂️ 手动选区与精准人像裁剪 (支持合影多人物框选)")
+        self.resize(780, 600)
+        self.cropped_image = None
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        tip_box = QFrame(); tip_box.setObjectName("Card")
+        tl = QHBoxLayout(tip_box); tl.setContentsMargins(10, 8, 10, 8)
+        lbl_tip = QLabel("💡 提示：按住框内可自由拖拽位置；按住右下角可等比缩放。适用于合影多人物框选与复杂背景精确定位。")
+        lbl_tip.setObjectName("SubTitle")
+        tl.addWidget(lbl_tip)
+        layout.addWidget(tip_box)
+
+        self.crop_widget = CropWidget(pil_image, aspect_ratio, self)
+        layout.addWidget(self.crop_widget, 1)
+
+        btn_row = QHBoxLayout()
+        b_cancel = QPushButton("取消")
+        b_cancel.clicked.connect(self.reject)
+        b_apply = QPushButton("✓ 应用此选区并抠图换底")
+        b_apply.setObjectName("PrimaryBtn")
+        b_apply.clicked.connect(self.apply_crop)
+
+        btn_row.addStretch()
+        btn_row.addWidget(b_cancel)
+        btn_row.addWidget(b_apply)
+        layout.addLayout(btn_row)
+
+    def apply_crop(self):
+        self.cropped_image = self.crop_widget.get_cropped_pil_image()
+        self.accept()
+
+
+# ============================================================ 后台 Worker
 class MattingWorker(QThread):
     done = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, image_path):
+    def __init__(self, image_input):
         super().__init__()
-        self.image_path = image_path
+        self.image_input = image_input
 
     def run(self):
         try:
             from PIL import Image
-            img = Image.open(self.image_path)
+            if isinstance(self.image_input, str):
+                img = Image.open(self.image_input)
+            else:
+                img = self.image_input
             m = core.Matting()
             if not m.available():
                 self.failed.emit("未找到抠图模型，已转为原图裁切")
@@ -208,10 +389,10 @@ class RenderWorker(QThread):
     done = Signal(object, str, bool, object)
     error = Signal(str)
 
-    def __init__(self, image_path, size_dict, color_dict, mode_idx, extra_params,
+    def __init__(self, image_input, size_dict, color_dict, mode_idx, extra_params,
                  cut_lines, add_text, cached_rgba=None):
         super().__init__()
-        self.image_path = image_path
+        self.image_input = image_input
         self.size_dict = size_dict
         self.color_dict = color_dict
         self.mode_idx = mode_idx
@@ -223,7 +404,11 @@ class RenderWorker(QThread):
     def run(self):
         try:
             from PIL import Image
-            img = Image.open(self.image_path)
+            if isinstance(self.image_input, str):
+                img = Image.open(self.image_input)
+            else:
+                img = self.image_input
+
             bg_rgb = self.color_dict["rgb"]
             need_matting = bg_rgb is not None
 
@@ -304,7 +489,7 @@ class RenderWorker(QThread):
             self.error.emit(f"{e}\n{traceback.format_exc()[-300:]}")
 
 
-# ============================================================ 批量处理后台 Worker
+# ============================================================ 批量处理
 class BatchWorker(QThread):
     progress = Signal(int, int, str)
     finished = Signal(int, list)
@@ -318,7 +503,7 @@ class BatchWorker(QThread):
         self.export_single = export_single
         self.export_sheet = export_sheet
         self.paper_dict = paper_dict
-        self.export_fmt = export_fmt # "both", "png", "jpg"
+        self.export_fmt = export_fmt
         self.out_dir = out_dir
 
     def run(self):
@@ -525,6 +710,8 @@ class MainWindow(QMainWindow):
 
         self.settings = QSettings("IDPhotoStudio", "Settings")
         self.input_path = None
+        self.raw_pil_image = None
+        self.active_pil_image = None
         self.cached_rgba = None
         self.current_preview_image = None
         self.current_single_id = None
@@ -605,6 +792,22 @@ class MainWindow(QMainWindow):
         b_sel = QPushButton("选择照片"); b_sel.clicked.connect(self.select_photo)
         dl.addWidget(b_sel)
         cl.addWidget(self.dropbox)
+
+        # 快捷裁剪与重置工具栏
+        tool_row = QHBoxLayout()
+        self.btn_crop = QPushButton("✂️ 手动选区/裁剪人像…")
+        self.btn_crop.setObjectName("SecondaryBtn")
+        self.btn_crop.clicked.connect(self.open_crop_dialog)
+        self.btn_crop.setEnabled(False)
+
+        self.btn_reset_crop = QPushButton("↺ 恢复完整原图")
+        self.btn_reset_crop.setObjectName("SecondaryBtn")
+        self.btn_reset_crop.clicked.connect(self.reset_to_raw_image)
+        self.btn_reset_crop.setEnabled(False)
+
+        tool_row.addWidget(self.btn_crop)
+        tool_row.addWidget(self.btn_reset_crop)
+        cl.addLayout(tool_row)
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
@@ -909,23 +1112,55 @@ class MainWindow(QMainWindow):
 
     def set_photo(self, p):
         self.input_path = p
+        from PIL import Image
+        try:
+            self.raw_pil_image = Image.open(p)
+            self.active_pil_image = self.raw_pil_image.copy()
+        except Exception:
+            return
+
         self.cached_rgba = None
         self.current_preview_image = None
         self.current_single_id = None
 
         fname = os.path.basename(p)
         self.lbl_filename.setText(fname)
-        try:
-            from PIL import Image
-            img = Image.open(p)
-            self.lbl_filesize.setText(f"原图: {img.size[0]} × {img.size[1]} px")
-            thumb = img.copy()
-            thumb.thumbnail((48, 48), Image.LANCZOS)
-            qimg = pil_to_qimage(thumb)
-            self.lbl_thumb.setPixmap(QPixmap.fromImage(qimg).scaled(48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        except Exception:
-            pass
+        self.lbl_filesize.setText(f"原图: {self.raw_pil_image.size[0]} × {self.raw_pil_image.size[1]} px")
 
+        thumb = self.raw_pil_image.copy()
+        thumb.thumbnail((48, 48), Image.LANCZOS)
+        qimg = pil_to_qimage(thumb)
+        self.lbl_thumb.setPixmap(QPixmap.fromImage(qimg).scaled(48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+        self.btn_crop.setEnabled(True)
+        self.btn_reset_crop.setEnabled(True)
+
+        self._start_matting_for_active_image()
+
+    def open_crop_dialog(self):
+        if not self.raw_pil_image:
+            return
+        s = self.size_combo.currentData() or core.load_sizes()[0]
+        aspect = s["w_mm"] / s["h_mm"]
+
+        dlg = CropDialog(self.active_pil_image or self.raw_pil_image, aspect, self)
+        if dlg.exec() == QDialog.Accepted and dlg.cropped_image:
+            self.active_pil_image = dlg.cropped_image
+            self.lbl_filesize.setText(f"已手动裁剪: {self.active_pil_image.size[0]} × {self.active_pil_image.size[1]} px")
+            self._start_matting_for_active_image()
+
+    def reset_to_raw_image(self):
+        if not self.raw_pil_image:
+            return
+        self.active_pil_image = self.raw_pil_image.copy()
+        self.lbl_filesize.setText(f"原图: {self.raw_pil_image.size[0]} × {self.raw_pil_image.size[1]} px")
+        self._start_matting_for_active_image()
+
+    def _start_matting_for_active_image(self):
+        if not self.active_pil_image:
+            return
+
+        self.cached_rgba = None
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)
         self.status.setText("正在进行智能发丝抠图…")
@@ -933,7 +1168,7 @@ class MainWindow(QMainWindow):
         if self.mworker and self.mworker.isRunning():
             self.mworker.quit(); self.mworker.wait(1000)
 
-        self.mworker = MattingWorker(p)
+        self.mworker = MattingWorker(self.active_pil_image)
         self.mworker.done.connect(self.on_matting_done)
         self.mworker.failed.connect(self.on_matting_failed)
         self.mworker.start()
@@ -952,12 +1187,13 @@ class MainWindow(QMainWindow):
         self._do_render()
 
     def schedule_render(self):
-        if not self.input_path:
+        if not self.active_pil_image and not self.input_path:
             return
         self.render_timer.start(50)
 
     def _do_render(self):
-        if not self.input_path:
+        active_img = self.active_pil_image or self.input_path
+        if not active_img:
             return
 
         size_dict = self.size_combo.currentData()
@@ -996,7 +1232,7 @@ class MainWindow(QMainWindow):
             self.rworker.quit(); self.rworker.wait(500)
 
         self.rworker = RenderWorker(
-            self.input_path, size_dict, color_dict, mode_idx, extra_params,
+            active_img, size_dict, color_dict, mode_idx, extra_params,
             cut_lines, add_text, cached_rgba=self.cached_rgba
         )
         self.rworker.done.connect(self.on_render_done)
@@ -1034,7 +1270,6 @@ class MainWindow(QMainWindow):
 
         painter = QPainter(bordered_pixmap)
         painter.setRenderHint(QPainter.Antialiasing)
-        # 绘制浅灰相框
         painter.setPen(QPen(QColor("#94a3b8"), 1))
         painter.setBrush(QColor("#ffffff"))
         painter.drawRect(0, 0, scaled_pix.width() + 1, scaled_pix.height() + 1)
@@ -1058,7 +1293,7 @@ class MainWindow(QMainWindow):
             return
 
         self.settings.setValue("last_export_dir", out_dir)
-        base_name = os.path.splitext(os.path.basename(self.input_path))[0]
+        base_name = os.path.splitext(os.path.basename(self.input_path or "照片"))[0]
         size_name = self.size_combo.currentData()["name"].split(" ")[0]
         export_fmt = self.combo_export_fmt.currentData() # "both", "png", "jpg"
 

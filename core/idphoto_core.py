@@ -3,10 +3,11 @@
 idphoto_core.py — 证件照换底色 + 排版打印 核心引擎（数据驱动，无 GUI 依赖）
 =========================================================================
 - 智能抠图：SOTA 级 BRIA RMBG-1.4 高清发丝抠图模型（1024x1024 亚像素精度，发丝边缘极致纯净）
-- 照相馆标准证件照构图：左右黄金对称、头顶留白 8%、双肩自然平衡对称展开（彻底根治右侧缺角/不对称）
+- 杂乱背景与多人物过滤：连通域中心主人物分析，自动剔除背景噪点与边缘路人
+- 照相馆标准证件照构图：左右黄金对称、头顶留白 8%、双肩自然平衡对称展开
 - 行业规范冲印排版：5寸/6寸置顶，舒适留白，带标准裁切虚线框与尺寸标线
 - 黄金对称混排冲印：5寸 (2二寸+4一寸)、6寸 (4二寸+6一寸 / 2二寸+8一寸 / 4二寸+4一寸)
-- 自由自定义多尺寸混排引擎：支持任意组合与相纸容量超限安全保护
+- 自由多尺寸自定义混排引擎：支持任意组合与相纸容量超限安全保护
 """
 
 import os
@@ -345,7 +346,7 @@ def create_standard_id_photo(rgba, target_w, target_h, bg_rgb):
         x_center = orig_w / 2.0
         head_w = orig_w * 0.45
 
-    # 肩膀/衣服对称半宽检测 (在 y_min + 1200 ~ 1800 区域扫描衣服有效左右边界)
+    # 肩膀/衣服对称半宽检测
     sh_start = min(orig_h - 100, y_min + int(head_w * 0.8))
     sh_end = min(orig_h, sh_start + 600)
     shoulder_rows = alpha_arr[sh_start : sh_end, :]
@@ -356,24 +357,19 @@ def create_standard_id_photo(rgba, target_w, target_h, bg_rgb):
         s_right = s_cols[-1]
         half_w_left = max(head_w * 0.55, x_center - s_left)
         half_w_right = max(head_w * 0.55, s_right - x_center)
-        # 对称有效半宽
         balanced_half_w = min(half_w_left, half_w_right)
     else:
         balanced_half_w = head_w * 0.75
 
-    # 照相馆黄金标准对称裁切框：
-    # 证件照原图裁切框半宽 = balanced_half_w * 1.08 (确保双肩对称且饱满)
     aspect = target_w / target_h
     crop_w = max(int(round(head_w * 1.25)), int(round(balanced_half_w * 2 * 1.06)))
     crop_h = int(round(crop_w / aspect))
 
-    # 垂直位置：头顶留白约 8% (y_min 位于 crop_y1 + crop_h * 0.08)
     crop_x1 = int(round(x_center - crop_w / 2.0))
     crop_x2 = crop_x1 + crop_w
     crop_y1 = int(round(y_min - crop_h * 0.08))
     crop_y2 = crop_y1 + crop_h
 
-    # 截取原图
     crop_rgba = Image.new("RGBA", (crop_w, crop_h), (0, 0, 0, 0))
     src_x1 = max(0, crop_x1); src_y1 = max(0, crop_y1)
     src_x2 = min(orig_w, crop_x2); src_y2 = min(orig_h, crop_y2)
@@ -384,12 +380,10 @@ def create_standard_id_photo(rgba, target_w, target_h, bg_rgb):
         cropped_part = rgba.crop((src_x1, src_y1, src_x2, src_y2))
         crop_rgba.paste(cropped_part, (dst_x1, dst_y1))
 
-    # 缩放到目标证件照尺寸
     scaled = crop_rgba.resize((target_w, target_h), Image.LANCZOS)
     canvas = Image.new("RGB", (target_w, target_h), bg_rgb if bg_rgb else (255, 255, 255))
     canvas.paste(scaled, (0, 0), scaled.split()[-1])
 
-    # 如果是白底，绘制极细的 1px 浅灰色外边框 (防止白纸打印时融为一体)
     if bg_rgb == (255, 255, 255):
         draw = ImageDraw.Draw(canvas)
         draw.rectangle([0, 0, target_w - 1, target_h - 1], outline=(220, 220, 220), width=1)
@@ -424,10 +418,6 @@ def prepare_id_photo(image, id_w_px, id_h_px, bg_rgb, matting=None):
 
 # ============================================================ 照相馆规范舒适冲印排版算法
 def compute_layout(paper_w_mm, paper_h_mm, id_w_mm, id_h_mm):
-    """
-    照相馆标准冲印排版算法：
-    自动在横放与竖放中选择最合适的方向，留出舒适的打印机走纸边距 (4~5mm) 与裁切线。
-    """
     standards = {
         # 6寸相纸: 102 x 152 mm (横放 152 x 102)
         (102, 152, 25, 35): {"paper_w": 152, "paper_h": 102, "cols": 4, "rows": 2, "count": 8, "gap": 1.5, "margin": 4.0},
@@ -560,10 +550,7 @@ def compose_sheet(id_photo, layout, sheet_color=(255, 255, 255),
             y = oy + r * (ih + gap)
             sheet.paste(id_photo, (x, y))
 
-            # 浅灰 1px 细外边框
             draw.rectangle([x, y, x + iw - 1, y + ih - 1], outline=border_color, width=1)
-
-            # 裁切虚线框
             if cut_lines:
                 _draw_dashed_rect(draw, x, y, x + iw - 1, y + ih - 1, color=(185, 185, 185))
 
@@ -593,9 +580,6 @@ def compose_sheet(id_photo, layout, sheet_color=(255, 255, 255),
 
 # ============================================================ 照相馆黄金对称混排冲印
 def compose_mixed_sheet(id_1in, id_2in, mix_type="6in_4_6", cut_lines=True, add_text=True):
-    """
-    照相馆金牌黄金分割混排：左右对称、上下呼应、严密对齐
-    """
     w_2in, h_2in = mm_to_px(35), mm_to_px(49)
     w_1in, h_1in = mm_to_px(25), mm_to_px(35)
 
@@ -604,7 +588,6 @@ def compose_mixed_sheet(id_1in, id_2in, mix_type="6in_4_6", cut_lines=True, add_
     border_color = (200, 200, 200)
 
     if mix_type == "5in_2_4":
-        # 5寸横放 (127 x 89 mm -> 1500 x 1051 px)
         pw, ph = mm_to_px(127), mm_to_px(89)
         sheet = Image.new("RGB", (pw, ph), (255, 255, 255))
         draw = ImageDraw.Draw(sheet)
@@ -618,7 +601,6 @@ def compose_mixed_sheet(id_1in, id_2in, mix_type="6in_4_6", cut_lines=True, add_
         total_w = w_left + gap_group + w_right
         ox = (pw - total_w) // 2
 
-        # 左侧 2张二寸
         oy_left = (ph - h_left) // 2
         for c in range(2):
             x = ox + c * (w_2in + gap)
@@ -628,7 +610,6 @@ def compose_mixed_sheet(id_1in, id_2in, mix_type="6in_4_6", cut_lines=True, add_
             if cut_lines:
                 _draw_dashed_rect(draw, x, y, x + w_2in - 1, y + h_2in - 1)
 
-        # 右侧 4张一寸 (2x2)
         ox_right = ox + w_left + gap_group
         oy_right = (ph - h_right) // 2
         for r in range(2):
@@ -644,7 +625,6 @@ def compose_mixed_sheet(id_1in, id_2in, mix_type="6in_4_6", cut_lines=True, add_
         return sheet, info
 
     elif mix_type == "6in_4_6":
-        # 6寸横放 (152 x 102 mm -> 1795 x 1205 px)
         pw, ph = mm_to_px(152), mm_to_px(102)
         sheet = Image.new("RGB", (pw, ph), (255, 255, 255))
         draw = ImageDraw.Draw(sheet)
@@ -658,7 +638,6 @@ def compose_mixed_sheet(id_1in, id_2in, mix_type="6in_4_6", cut_lines=True, add_
         total_w = w_left + gap_group + w_right
         ox = max(mm_to_px(2.0), (pw - total_w) // 2)
 
-        # 左边 4张二寸 (2x2 居中)
         oy_left = (ph - h_left) // 2
         for r in range(2):
             for c in range(2):
@@ -669,7 +648,6 @@ def compose_mixed_sheet(id_1in, id_2in, mix_type="6in_4_6", cut_lines=True, add_
                 if cut_lines:
                     _draw_dashed_rect(draw, x, y, x + w_2in - 1, y + h_2in - 1)
 
-        # 右边 6张一寸 (3x2 居中)
         ox_right = ox + w_left + gap_group
         oy_right = (ph - h_right) // 2
         for r in range(2):
