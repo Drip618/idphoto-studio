@@ -1530,16 +1530,6 @@ class MainWindow(QMainWindow):
                     self.current_preview_image.save(p_sheet_jpg, "JPEG", quality=95)
                     saved_files.append(p_sheet_jpg)
 
-                if self.current_single_id:
-                    p_s_png = os.path.join(d, f"{base_name}_{s_name}_{c_name}_高清单张.png")
-                    p_s_jpg = os.path.join(d, f"{base_name}_{s_name}_{c_name}_高清单张.jpg")
-                    if exp_fmt in ("both", "png"):
-                        self.current_single_id.save(p_s_png, "PNG")
-                        saved_files.append(p_s_png)
-                    if exp_fmt in ("both", "jpg"):
-                        self.current_single_id.save(p_s_jpg, "JPEG", quality=95)
-                        saved_files.append(p_s_jpg)
-
             QMessageBox.information(
                 self, "导出成功",
                 f"已成功保存 {len(saved_files)} 份高清文件至：\n{d}\n\n文件列表：\n" + "\n".join([os.path.basename(f) for f in saved_files])
