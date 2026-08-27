@@ -4,10 +4,10 @@ ui/main_window.py — 证件照工作室 Studio 完整重构版
 =========================================================================
 - 解决所有界面显示截断与重叠问题（自适应宽度，无多余横向滚动条）
 - 修复相纸下拉名称重复问题
-- 支持「常用混排」冲印模式（如 6寸 4张二寸+4张一寸 / 2张二寸+8张一寸 / 5寸混排）
-- 采用 SOTA RMBG-1.4 与 Hivision 精调抠图引擎，彻底去除暗色背景
-- 采用国标证件照构图（肩膀延伸穿透画幅底部，头顶留白，告别浮空边框）
-- 完整注册 macOS Dock 图标与窗口切换
+- 支持「常用混排」冲印模式（6寸 4张二寸+4张一寸，全正立直放）
+- 采用 SOTA RMBG-1.4 亚像素发丝抠图模型，彻底去除暗色背景
+- 采用照相馆国标黄金比例构图（肩膀自然贴死画幅底部，头顶留白，绝无悬空底色）
+- 画布自适应可视区缩放，绝不下溢出屏幕
 """
 import os
 import sys
@@ -173,21 +173,15 @@ QScrollArea {
 """
 
 
-def pil_to_pixmap(img, max_w=1400, max_h=1000):
+def pil_to_qimage(img):
     if img is None:
-        return QPixmap()
+        return QImage()
     from PIL import Image
     if img.mode != "RGB":
         img = img.convert("RGB")
     w, h = img.size
-    scale = min(max_w / max(1, w), max_h / max(1, h))
-    if scale < 1.0:
-        new_w, new_h = max(1, int(w * scale)), max(1, int(h * scale))
-        img = img.resize((new_w, new_h), Image.LANCZOS)
-        w, h = new_w, new_h
     data = img.tobytes("raw", "RGB")
-    qimg = QImage(data, w, h, w * 3, QImage.Format_RGB888)
-    return QPixmap.fromImage(qimg)
+    return QImage(data, w, h, w * 3, QImage.Format_RGB888)
 
 
 class MattingWorker(QThread):
@@ -252,9 +246,19 @@ class RenderWorker(QThread):
                 self.done.emit(id_photo, info, True, id_photo)
                 return
 
-            # 4: 常用混排
+            # 4: 常用混排 (4张二寸 + 4张一寸)
             if self.mode_idx == 4:
-                sheet, info = self._render_mixed(img, bg_rgb)
+                # 准备 1寸和2寸
+                if self.cached_rgba is not None:
+                    id_1in = core.create_standard_id_photo(self.cached_rgba, core.mm_to_px(25), core.mm_to_px(35), bg_rgb)
+                    id_2in = core.create_standard_id_photo(self.cached_rgba, core.mm_to_px(35), core.mm_to_px(49), bg_rgb)
+                else:
+                    matting = core.Matting() if (bg_rgb is not None and core.Matting().available()) else None
+                    id_1in = core.prepare_id_photo(img, core.mm_to_px(25), core.mm_to_px(35), bg_rgb, matting)
+                    id_2in = core.prepare_id_photo(img, core.mm_to_px(35), core.mm_to_px(49), bg_rgb, matting)
+
+                sheet = core.compose_mixed_6in_sheet(id_1in, id_2in, cut_lines=self.cut_lines, add_text=self.add_text)
+                info = "6寸冲印混排 · 4张二寸 (35×49mm) + 4张一寸 (25×35mm)"
                 self.done.emit(sheet, info, False, id_photo)
                 return
 
@@ -279,67 +283,12 @@ class RenderWorker(QThread):
                 cut_lines=self.cut_lines
             )
 
-            info = f"排版完成 · {lay['count']} 张 ({lay['cols']}列 × {lay['rows']}行) · 纸张 {lay['paper'][0]}×{lay['paper'][1]} px"
+            ori_tag = "横放" if lay["paper_w_mm"] > lay["paper_h_mm"] else "竖放"
+            info = f"冲印排版 · {lay['count']} 张 ({lay['cols']}列 × {lay['rows']}行 · 相纸{ori_tag}) · {lay['paper'][0]}×{lay['paper'][1]} px"
             self.done.emit(sheet, info, False, id_photo)
         except Exception as e:
             import traceback
             self.error.emit(f"{e}\n{traceback.format_exc()[-300:]}")
-
-    def _render_mixed(self, img, bg_rgb):
-        # 混排逻辑
-        from PIL import Image, ImageDraw
-        mix_key = self.extra_params.get("mix_key", "6in_4_4")
-        # 准备1寸与2寸标准照片
-        if self.cached_rgba is not None:
-            id_1in = core.create_standard_id_photo(self.cached_rgba, core.mm_to_px(25), core.mm_to_px(35), bg_rgb)
-            id_2in = core.create_standard_id_photo(self.cached_rgba, core.mm_to_px(35), core.mm_to_px(49), bg_rgb)
-        else:
-            matting = core.Matting() if (bg_rgb is not None and core.Matting().available()) else None
-            id_1in = core.prepare_id_photo(img, core.mm_to_px(25), core.mm_to_px(35), bg_rgb, matting)
-            id_2in = core.prepare_id_photo(img, core.mm_to_px(35), core.mm_to_px(49), bg_rgb, matting)
-
-        # 6寸 (102x152mm) -> 1205x1795 px
-        pw, ph = core.mm_to_px(102), core.mm_to_px(152)
-        sheet = Image.new("RGB", (pw, ph), (255, 255, 255))
-        draw = ImageDraw.Draw(sheet)
-        gap = int(round(1.0 * core.PX_PER_MM))
-        border_c = (190, 190, 190)
-
-        # 混排 A: 4张2寸 + 4张1寸
-        # 2寸: 413x579 px (2x2), 1寸: 413x295 (横向 2x2)
-        w_2in, h_2in = id_2in.size
-        id_1in_rot = id_1in.rotate(90, expand=True)
-        w_1in, h_1in = id_1in_rot.size
-
-        ox = (pw - (w_2in * 2 + gap)) // 2
-        oy = 60
-        # 4张二寸
-        for r in range(2):
-            for c in range(2):
-                x = ox + c * (w_2in + gap)
-                y = oy + r * (h_2in + gap)
-                sheet.paste(id_2in, (x, y))
-                draw.rectangle([x, y, x + w_2in - 1, y + h_2in - 1], outline=border_c, width=1)
-
-        # 4张一寸 (横放)
-        oy_1in = oy + 2 * (h_2in + gap) + 16
-        for r in range(2):
-            for c in range(2):
-                x = ox + c * (w_1in + gap)
-                y = oy_1in + r * (h_1in + gap)
-                sheet.paste(id_1in_rot, (x, y))
-                draw.rectangle([x, y, x + w_1in - 1, y + h_1in - 1], outline=border_c, width=1)
-
-        # 标注
-        if self.add_text:
-            font = core._load_font(18)
-            label = "6寸冲印混排 (4张二寸 35×49mm + 4张一寸 25×35mm)"
-            bbox = draw.textbbox((0, 0), label, font=font)
-            tw = bbox[2] - bbox[0]
-            draw.text(((pw - tw) // 2, 16), label, fill=(60, 60, 60), font=font)
-
-        info = "6寸混排完成 · 4张二寸 + 4张一寸 · 纸张 1205×1795 px"
-        return sheet, info
 
 
 class MainWindow(QMainWindow):
@@ -351,6 +300,7 @@ class MainWindow(QMainWindow):
         self.settings = QSettings("IDPhotoStudio", "App")
         self.input_path = None
         self.cached_rgba = None
+        self.current_render_image = None # PIL Image
         self.current_sheet = None
         self.current_single = None
         self.current_color_data = {"name": "蓝底", "rgb": (67, 142, 219), "hex": "#438EDB"}
@@ -385,7 +335,7 @@ class MainWindow(QMainWindow):
         t_box = QVBoxLayout()
         title = QLabel("证件照工作室")
         title.setStyleSheet("font-size: 17px; font-weight: 800; color: #0f172a;")
-        subtitle = QLabel("智能抠图换底 · 冲印排版一体")
+        subtitle = QLabel("智能发丝抠图 · 照相馆标准排版")
         subtitle.setObjectName("SubTitle")
         t_box.addWidget(title)
         t_box.addWidget(subtitle)
@@ -454,9 +404,9 @@ class MainWindow(QMainWindow):
         self.color_btn_group.setExclusive(True)
 
         colors_def = [
-            ("白底", "#FFFFFF", "#1e293b", (255, 255, 255)),
-            ("红底", "#FF0000", "#ffffff", (255, 0, 0)),
             ("蓝底", "#438EDB", "#ffffff", (67, 142, 219)),
+            ("红底", "#FF0000", "#ffffff", (255, 0, 0)),
+            ("白底", "#FFFFFF", "#1e293b", (255, 255, 255)),
             ("深蓝", "#1E50A2", "#ffffff", (30, 80, 162)),
             ("灰底", "#D1D5DB", "#1e293b", (209, 213, 219)),
             ("原图", "transparent", "#1e293b", None),
@@ -471,7 +421,7 @@ class MainWindow(QMainWindow):
             btn.clicked.connect(lambda checked, name=cname, rgb=crgb, h=chex: self.set_background_color(name, rgb, h))
             self.color_btn_group.addButton(btn, idx)
             color_grid.addWidget(btn)
-            if idx == 2:  # 默认蓝底
+            if idx == 0:  # 默认蓝底
                 btn.setChecked(True)
 
         b_custom_c = QPushButton("🎨 自定义")
@@ -494,7 +444,7 @@ class MainWindow(QMainWindow):
             "🖼 仅单张证件照",
             "📐 自定义网格 (指定行/列)",
             "🔢 指定张数 (塞入相纸)",
-            "🔀 常用混排 (4张二寸 + 4张一寸)"
+            "🔀 6寸常用混排 (4张二寸 + 4张一寸)"
         ])
         self.mode_combo.currentIndexChanged.connect(self.on_mode_changed)
         cl_lay.addWidget(self.mode_combo)
@@ -534,7 +484,7 @@ class MainWindow(QMainWindow):
 
         # 辅助选项
         opt_line = QHBoxLayout()
-        self.cb_cutlines = QCheckBox("打印裁切参考线")
+        self.cb_cutlines = QCheckBox("打印裁切标线")
         self.cb_cutlines.setChecked(True)
         self.cb_cutlines.toggled.connect(self.trigger_render_debounce)
         opt_line.addWidget(self.cb_cutlines)
@@ -680,6 +630,7 @@ class MainWindow(QMainWindow):
         self.cached_rgba = None
         self.current_sheet = None
         self.current_single = None
+        self.current_render_image = None
 
         fname = os.path.basename(p)
         self.filename_label.setText(fname)
@@ -690,16 +641,20 @@ class MainWindow(QMainWindow):
             orig_img = Image.open(p)
             w, h = orig_img.size
             self.fileinfo_label.setText(f"原图: {w} × {h} px")
-            thumb = pil_to_pixmap(orig_img, 40, 40)
-            self.thumb_label.setPixmap(thumb)
-            pm = pil_to_pixmap(orig_img, self.preview_canvas.width() - 30, self.preview_canvas.height() - 30)
-            self.preview_canvas.setPixmap(pm)
-            self.view_status.setText(f"已载入原图: {fname} · 后台智能发丝级抠图中…")
+            thumb_img = orig_img.copy()
+            thumb_img.thumbnail((40, 40), Image.LANCZOS)
+            thumb_pm = QPixmap.fromImage(pil_to_qimage(thumb_img))
+            self.thumb_label.setPixmap(thumb_pm)
+
+            # 呈现原图真实比例
+            self.current_render_image = orig_img
+            self.update_canvas_display()
+            self.view_status.setText(f"已载入: {fname} · 后台智能高精抠图中…")
             self.footer_info.setText(f"原图分辨率: {w} × {h} px")
         except Exception as e:
             self.fileinfo_label.setText(str(e))
 
-        self.status_label.setText("正在执行高精度发丝级智能抠图…")
+        self.status_label.setText("正在执行 RMBG 亚像素发丝级智能抠图…")
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)
 
@@ -765,11 +720,12 @@ class MainWindow(QMainWindow):
         mode = self.mode_combo.currentIndex()
         if mode == 0 and s and p:
             lay = core.compute_layout(p["w_mm"], p["h_mm"], s["w_mm"], s["h_mm"])
-            self.paper_info_badge.setText(f"💡 自动排满: {lay['count']} 张 ({lay['cols']}列 × {lay['rows']}行)")
+            ori_tag = "横放相纸" if lay["paper_w_mm"] > lay["paper_h_mm"] else "竖放相纸"
+            self.paper_info_badge.setText(f"💡 自动最大排满: {lay['count']} 张 ({lay['cols']}列 × {lay['rows']}行 · {ori_tag})")
         elif mode == 1:
             self.paper_info_badge.setText("💡 输出单张证件照")
         elif mode == 4:
-            self.paper_info_badge.setText("💡 6寸相纸: 4张二寸(35×49) + 4张一寸(25×35)")
+            self.paper_info_badge.setText("💡 6寸标准冲印: 4张二寸(35×49) + 4张一寸(25×35)")
         else:
             self.paper_info_badge.setText("")
 
@@ -788,7 +744,7 @@ class MainWindow(QMainWindow):
         self.opt_paper.blockSignals(True)
         self.opt_paper.clear()
         for p in core.load_papers():
-            self.opt_paper.addItem(p["name"], p)
+            self.opt_paper.addItem(f"{p['name']}", p)
         self.opt_paper.blockSignals(False)
 
     # ---------- 渲染管理 ----------
@@ -838,15 +794,24 @@ class MainWindow(QMainWindow):
         self.worker.start()
 
     def on_render_done(self, img, info, is_single, single_photo):
+        self.current_render_image = img
         self.current_sheet = None if is_single else img
         self.current_single = single_photo
 
         if img is not None:
-            pm = pil_to_pixmap(img, self.preview_canvas.width() - 30, self.preview_canvas.height() - 30)
-            self.preview_canvas.setPixmap(pm)
+            self.update_canvas_display()
             self.view_status.setText(info)
             self.footer_info.setText(f"输出分辨率: {img.size[0]} × {img.size[1]} px · 300 DPI")
             self.status_label.setText("✓ 渲染完成，可直接导出")
+
+    def update_canvas_display(self):
+        if self.current_render_image is None:
+            return
+        target_w = max(100, self.preview_canvas.width() - 24)
+        target_h = max(100, self.preview_canvas.height() - 24)
+        qimg = pil_to_qimage(self.current_render_image)
+        pm = QPixmap.fromImage(qimg).scaled(target_w, target_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self.preview_canvas.setPixmap(pm)
 
     def on_render_error(self, err):
         self.status_label.setText(f"渲染出错: {err}")
@@ -910,10 +875,7 @@ class MainWindow(QMainWindow):
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
-        if self.current_sheet is not None:
-            self.preview_canvas.setPixmap(pil_to_pixmap(self.current_sheet, self.preview_canvas.width() - 30, self.preview_canvas.height() - 30))
-        elif self.current_single is not None:
-            self.preview_canvas.setPixmap(pil_to_pixmap(self.current_single, self.preview_canvas.width() - 30, self.preview_canvas.height() - 30))
+        self.update_canvas_display()
 
     def closeEvent(self, e):
         self.settings.setValue("geometry", self.saveGeometry())
