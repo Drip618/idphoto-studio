@@ -5,9 +5,10 @@ ui/main_window.py — 证件照工作室 macOS / Windows 工业级原生桌面�
 - 苹果 Studio 级美学设计，QSettings 本地持久化记忆窗口尺寸与目录
 - 默认进入单张证件照模式，导入照片与换底色绝不自作主张排版
 - 相纸排序 5寸/6寸 置顶，从小到大规范排列
-- 照相馆黄金对称混排 + 自由多尺寸自定义混排装箱引擎（带相纸容量超限检测）
+- 照相馆黄金对称混排 + 自由多尺寸自定义混排装箱引擎（完美支持 5寸/6寸 自定义组合）
+- 界面布局全面优化：禁绝横向滚动条、数量列表垂直对齐、按钮文字完整显示
 - 新增「✂️ 手动选区/裁剪人像」交互式工具：支持合影多人物框选与复杂背景精确定位
-- 预览区浅灰精致边框，白底照片绝不融为一体
+- 预览区浅灰精致相框，白底照片绝不融为一体
 - 底部操作栏固定无闪烁，支持用户自主选择导出格式 (PNG / JPG / 两种都要)
 """
 
@@ -61,7 +62,7 @@ QLabel#Badge {
     color: #2563eb;
     border: 1px solid #bfdbfe;
     border-radius: 4px;
-    padding: 3px 6px;
+    padding: 4px 8px;
     font-size: 11px;
     font-weight: 600;
 }
@@ -70,7 +71,7 @@ QLabel#WarnBadge {
     color: #dc2626;
     border: 1px solid #fecaca;
     border-radius: 4px;
-    padding: 3px 6px;
+    padding: 4px 8px;
     font-size: 11px;
     font-weight: 600;
 }
@@ -78,9 +79,10 @@ QComboBox, QLineEdit, QSpinBox {
     background-color: #ffffff;
     border: 1px solid #cbd5e1;
     border-radius: 6px;
-    padding: 6px 8px;
+    padding: 5px 8px;
     color: #1e293b;
     selection-background-color: #3b82f6;
+    min-height: 22px;
 }
 QComboBox:hover, QLineEdit:hover, QSpinBox:hover {
     border-color: #94a3b8;
@@ -102,6 +104,7 @@ QPushButton {
     padding: 6px 12px;
     color: #334155;
     font-weight: 500;
+    min-height: 22px;
 }
 QPushButton:hover {
     background-color: #f8fafc;
@@ -190,12 +193,10 @@ class CropWidget(QWidget):
     def __init__(self, pil_image, aspect_ratio=25.0/35.0, parent=None):
         super().__init__(parent)
         self.pil_image = pil_image
-        self.aspect_ratio = aspect_ratio # 目标宽高比 (w / h)
+        self.aspect_ratio = aspect_ratio
         self.qimage = pil_to_qimage(pil_image)
         self.pixmap = QPixmap.fromImage(self.qimage)
 
-        # 裁剪框在原图坐标系中的比例 (0.0 ~ 1.0)
-        # 默认框选中央 70% 区域
         crop_h = 0.85
         crop_w = crop_h * self.aspect_ratio * (pil_image.size[1] / pil_image.size[0])
         if crop_w > 0.95:
@@ -223,40 +224,30 @@ class CropWidget(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 
-        # 绘制背景
         painter.fillRect(self.rect(), QColor("#1e293b"))
 
-        # 计算图片居中绘制区域
         vw, vh = self.width(), self.height()
         scaled_pix = self.pixmap.scaled(vw, vh, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         self.img_rect = QRect((vw - scaled_pix.width()) // 2, (vh - scaled_pix.height()) // 2,
                               scaled_pix.width(), scaled_pix.height())
         painter.drawPixmap(self.img_rect.topLeft(), scaled_pix)
 
-        # 计算选区在视窗中的像素矩形
         cx = self.img_rect.x() + int(self.rel_x * self.img_rect.width())
         cy = self.img_rect.y() + int(self.rel_y * self.img_rect.height())
         cw = int(self.rel_w * self.img_rect.width())
         ch = int(self.rel_h * self.img_rect.height())
         self.crop_rect = QRect(cx, cy, cw, ch)
 
-        # 绘制半透明黑色蒙版 (选区外)
         mask_color = QColor(0, 0, 0, 160)
-        # 上
         painter.fillRect(QRect(0, 0, vw, cy), mask_color)
-        # 下
         painter.fillRect(QRect(0, cy + ch, vw, vh - (cy + ch)), mask_color)
-        # 左
         painter.fillRect(QRect(0, cy, cx, ch), mask_color)
-        # 右
         painter.fillRect(QRect(cx + cw, cy, vw - (cx + cw), ch), mask_color)
 
-        # 绘制亮蓝色裁剪框与九宫格参考线
         pen = QPen(QColor("#3b82f6"), 2)
         painter.setPen(pen)
         painter.drawRect(self.crop_rect)
 
-        # 九宫格参考线 (辅助构图)
         pen_grid = QPen(QColor(255, 255, 255, 100), 1, Qt.DashLine)
         painter.setPen(pen_grid)
         painter.drawLine(cx + cw // 3, cy, cx + cw // 3, cy + ch)
@@ -264,7 +255,6 @@ class CropWidget(QWidget):
         painter.drawLine(cx, cy + ch // 3, cx + cw, cy + ch // 3)
         painter.drawLine(cx, cy + 2 * ch // 3, cx + cw, cy + 2 * ch // 3)
 
-        # 绘制四角控制手柄
         painter.setBrush(QColor("#ffffff"))
         painter.setPen(QPen(QColor("#2563eb"), 2))
         handle_size = 8
@@ -276,14 +266,12 @@ class CropWidget(QWidget):
     def mousePressEvent(self, event: QMouseEvent):
         if hasattr(self, "crop_rect"):
             pos = event.pos()
-            # 检查是否点击右下角手柄 (缩放)
             br_handle = QRect(self.crop_rect.right() - 15, self.crop_rect.bottom() - 15, 30, 30)
             if br_handle.contains(pos):
                 self.resizing = True
                 self.drag_start = pos
                 return
 
-            # 检查是否点击选区内部 (拖拽平移)
             if self.crop_rect.contains(pos):
                 self.dragging = True
                 self.drag_start = pos
@@ -309,7 +297,6 @@ class CropWidget(QWidget):
 
             dw_rel = delta.x() / self.img_rect.width()
             new_w = max(0.15, min(1.0 - self.rel_x, self.rel_w + dw_rel))
-            # 维持比例
             new_h = new_w / self.aspect_ratio * (self.pil_image.size[0] / self.pil_image.size[1])
             if self.rel_y + new_h <= 1.0:
                 self.rel_w = new_w
@@ -705,7 +692,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("证件照工作室 Studio")
-        self.setMinimumSize(980, 700)
+        self.setMinimumSize(1000, 720)
         self.setAcceptDrops(True)
 
         self.settings = QSettings("IDPhotoStudio", "Settings")
@@ -737,19 +724,21 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Horizontal)
         splitter.setHandleWidth(4)
 
-        # ----------------- 左侧控制面板 (固定底部操作栏，0闪烁) -----------------
+        # ----------------- 左侧控制面板 (固定底部操作栏，禁绝横向滚动) -----------------
         left_container = QWidget()
-        left_container.setMinimumWidth(390)
-        left_container.setMaximumWidth(460)
+        left_container.setMinimumWidth(400)
+        left_container.setMaximumWidth(480)
         left_box = QVBoxLayout(left_container)
         left_box.setContentsMargins(0, 0, 0, 0)
         left_box.setSpacing(8)
 
         left_scroll = QScrollArea()
         left_scroll.setWidgetResizable(True)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff) # 禁绝横向滚动条
+
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
-        left_layout.setContentsMargins(4, 4, 4, 4)
+        left_layout.setContentsMargins(4, 4, 8, 4)
         left_layout.setSpacing(10)
 
         # App 标题区
@@ -761,7 +750,8 @@ class MainWindow(QMainWindow):
         t_box.addWidget(lbl_logo); t_box.addWidget(lbl_sub)
         hl.addLayout(t_box)
         hl.addStretch()
-        btn_batch_top = QPushButton("📂 批量处理…"); btn_batch_top.setObjectName("SecondaryBtn")
+        btn_batch_top = QPushButton("📂 批量处理"); btn_batch_top.setObjectName("SecondaryBtn")
+        btn_batch_top.setFixedWidth(85)
         btn_batch_top.clicked.connect(self.open_batch_dialog)
         hl.addWidget(btn_batch_top)
         left_layout.addWidget(head_card)
@@ -834,7 +824,7 @@ class MainWindow(QMainWindow):
         sl.addWidget(self.lbl_spec_badge)
 
         sl.addWidget(QLabel("背景底色:"))
-        color_grid = QHBoxLayout(); color_grid.setSpacing(5)
+        color_grid = QGridLayout(); color_grid.setSpacing(6)
         self.color_btn_group = QButtonGroup(self)
         self.color_btn_group.setExclusive(True)
 
@@ -848,14 +838,15 @@ class MainWindow(QMainWindow):
             elif c["hex"] == "#ffffff":
                 btn.setStyleSheet("background-color: #ffffff; color: #1e293b; border: 1px solid #cbd5e1;")
             self.color_btn_group.addButton(btn, idx)
-            color_grid.addWidget(btn)
+            # 2行4列
+            color_grid.addWidget(btn, idx // 4, idx % 4)
             if idx == 0:
                 btn.setChecked(True)
 
         btn_custom_c = QPushButton("🎨 自定义")
         btn_custom_c.setObjectName("SecondaryBtn")
         btn_custom_c.clicked.connect(self.pick_custom_color)
-        color_grid.addWidget(btn_custom_c)
+        color_grid.addWidget(btn_custom_c, len(self.colors_data) // 4, len(self.colors_data) % 4)
 
         self.color_btn_group.idClicked.connect(self.on_color_changed)
         sl.addLayout(color_grid)
@@ -901,33 +892,36 @@ class MainWindow(QMainWindow):
         pl.addWidget(self.mix_container)
         self.mix_container.setVisible(False)
 
-        # 自由自定义混排容器 (模式 3)
+        # 自由自定义混排容器 (模式 3 - 垂直清晰表单布局，绝不挤压截断)
         self.custom_mix_container = QWidget()
-        cml = QVBoxLayout(self.custom_mix_container); cml.setContentsMargins(0, 0, 0, 0); cml.setSpacing(4)
-        cml.addWidget(QLabel("设定各尺寸冲印数量:"))
-        grid_counts = QGridLayout(); grid_counts.setSpacing(6)
+        cml = QVBoxLayout(self.custom_mix_container); cml.setContentsMargins(0, 0, 0, 0); cml.setSpacing(6)
+        cml.addWidget(QLabel("设定各尺寸冲印张数:"))
 
-        grid_counts.addWidget(QLabel("一寸 (25×35mm):"), 0, 0)
+        form_counts = QFormLayout()
+        form_counts.setContentsMargins(0, 0, 0, 0)
+        form_counts.setSpacing(6)
+
         self.spin_1in = QSpinBox(); self.spin_1in.setRange(0, 24); self.spin_1in.setValue(4)
+        self.spin_1in.setFixedWidth(80)
         self.spin_1in.valueChanged.connect(self.schedule_render)
-        grid_counts.addWidget(self.spin_1in, 0, 1)
+        form_counts.addRow("一寸 (25×35mm):", self.spin_1in)
 
-        grid_counts.addWidget(QLabel("二寸 (35×49mm):"), 0, 2)
         self.spin_2in = QSpinBox(); self.spin_2in.setRange(0, 12); self.spin_2in.setValue(2)
+        self.spin_2in.setFixedWidth(80)
         self.spin_2in.valueChanged.connect(self.schedule_render)
-        grid_counts.addWidget(self.spin_2in, 0, 3)
+        form_counts.addRow("二寸 (35×49mm):", self.spin_2in)
 
-        grid_counts.addWidget(QLabel("小一寸 (22×32mm):"), 1, 0)
         self.spin_s1in = QSpinBox(); self.spin_s1in.setRange(0, 24); self.spin_s1in.setValue(0)
+        self.spin_s1in.setFixedWidth(80)
         self.spin_s1in.valueChanged.connect(self.schedule_render)
-        grid_counts.addWidget(self.spin_s1in, 1, 1)
+        form_counts.addRow("小一寸 (22×32mm):", self.spin_s1in)
 
-        grid_counts.addWidget(QLabel("大二寸 (35×53mm):"), 1, 2)
         self.spin_l2in = QSpinBox(); self.spin_l2in.setRange(0, 12); self.spin_l2in.setValue(0)
+        self.spin_l2in.setFixedWidth(80)
         self.spin_l2in.valueChanged.connect(self.schedule_render)
-        grid_counts.addWidget(self.spin_l2in, 1, 3)
+        form_counts.addRow("大二寸 (35×53mm):", self.spin_l2in)
 
-        cml.addLayout(grid_counts)
+        cml.addLayout(form_counts)
         self.lbl_mix_status = QLabel("✓ 正在计算相纸容量…")
         self.lbl_mix_status.setObjectName("Badge")
         cml.addWidget(self.lbl_mix_status)
@@ -1259,12 +1253,10 @@ class MainWindow(QMainWindow):
         qimg = pil_to_qimage(self.current_preview_image)
         pixmap = QPixmap.fromImage(qimg)
 
-        # 视窗等比自适应缩放 (四周留出 24px)
         cw = max(100, self.preview_canvas.width() - 24)
         ch = max(100, self.preview_canvas.height() - 24)
         scaled_pix = pixmap.scaled(cw, ch, Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
-        # 为白底/单张照片添加一层精致外相框与边线，绝不与白色底板融为一体
         bordered_pixmap = QPixmap(scaled_pix.size() + QSize(4, 4))
         bordered_pixmap.fill(Qt.transparent)
 
@@ -1295,7 +1287,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("last_export_dir", out_dir)
         base_name = os.path.splitext(os.path.basename(self.input_path or "照片"))[0]
         size_name = self.size_combo.currentData()["name"].split(" ")[0]
-        export_fmt = self.combo_export_fmt.currentData() # "both", "png", "jpg"
+        export_fmt = self.combo_export_fmt.currentData()
 
         saved_files = []
         try:

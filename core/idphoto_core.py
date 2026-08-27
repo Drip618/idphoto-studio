@@ -3,11 +3,10 @@
 idphoto_core.py — 证件照换底色 + 排版打印 核心引擎（数据驱动，无 GUI 依赖）
 =========================================================================
 - 智能抠图：SOTA 级 BRIA RMBG-1.4 高清发丝抠图模型（1024x1024 亚像素精度，发丝边缘极致纯净）
-- 杂乱背景与多人物过滤：连通域中心主人物分析，自动剔除背景噪点与边缘路人
 - 照相馆标准证件照构图：左右黄金对称、头顶留白 8%、双肩自然平衡对称展开
 - 行业规范冲印排版：5寸/6寸置顶，舒适留白，带标准裁切虚线框与尺寸标线
 - 黄金对称混排冲印：5寸 (2二寸+4一寸)、6寸 (4二寸+6一寸 / 2二寸+8一寸 / 4二寸+4一寸)
-- 自由多尺寸自定义混排引擎：支持任意组合与相纸容量超限安全保护
+- 自由多尺寸自定义混排装箱引擎：智能分栏与自适应边距排版（带相纸容量超限检测）
 """
 
 import os
@@ -320,7 +319,7 @@ def create_standard_id_photo(rgba, target_w, target_h, bg_rgb):
     """
     照相馆黄金对称构图标准：
     1. 自动检测人像面部中轴线与肩膀对称范围
-    2. 裁切框以肩膀实际有衣服的对称宽度为基准，左右两肩绝对平衡饱满，彻底解决右侧缺角/缺一块
+    2. 裁切框以肩膀实际有衣服的对称宽度为基准，左右两肩绝对平衡饱满
     3. 头顶留白约 8%~9%
     4. 头部大小大方饱满，符合国标证件照比例
     """
@@ -334,7 +333,7 @@ def create_standard_id_photo(rgba, target_w, target_h, bg_rgb):
 
     y_min = np.where(rows)[0][0]
 
-    # 头部扫描 (扫描头顶往下 700px 范围内的中心)
+    # 头部扫描
     head_scan_h = min(700, max(100, int(orig_h * 0.35)))
     head_rows = alpha_arr[y_min : y_min + head_scan_h, :]
     head_cols = np.any(head_rows > 45, axis=0)
@@ -737,94 +736,177 @@ def compose_mixed_sheet(id_1in, id_2in, mix_type="6in_4_6", cut_lines=True, add_
         return sheet, info
 
 
-# ============================================================ 自由多尺寸自定义混排装箱引擎
+# ============================================================ 自由多尺寸自定义混排装箱引擎 (智能分栏与装箱)
 def compose_custom_mixed_sheet(images_dict, counts_dict, paper_dict, cut_lines=True):
     pw_mm, ph_mm = paper_dict["w_mm"], paper_dict["h_mm"]
     dims_map = {
-        "1in": (25, 35, "一寸"),
         "2in": (35, 49, "二寸"),
+        "1in": (25, 35, "一寸"),
         "s_1in": (22, 32, "小一寸"),
         "l_2in": (35, 53, "大二寸"),
     }
 
-    items = []
-    for k, count in counts_dict.items():
-        if count > 0 and k in images_dict and k in dims_map:
+    active_groups = []
+    total_req_count = 0
+    for k in ["2in", "1in", "s_1in", "l_2in"]:
+        cnt = counts_dict.get(k, 0)
+        if cnt > 0 and k in images_dict and k in dims_map:
             w_mm, h_mm, tag = dims_map[k]
-            img = images_dict[k]
-            for _ in range(count):
-                items.append({"w_mm": w_mm, "h_mm": h_mm, "img": img, "tag": tag})
+            active_groups.append({
+                "key": k, "w_mm": w_mm, "h_mm": h_mm,
+                "count": cnt, "img": images_dict[k], "tag": tag
+            })
+            total_req_count += cnt
 
-    if not items:
+    if not active_groups:
         pw_px, ph_px = mm_to_px(pw_mm), mm_to_px(ph_mm)
         sheet = Image.new("RGB", (pw_px, ph_px), (255, 255, 255))
-        return sheet, "未选择任何混排照片数量", True
+        return sheet, "请在左侧设定各尺寸冲印数量", True
 
-    best_plan = None
-    for pw_m, ph_m in [(max(pw_mm, ph_mm), min(pw_mm, ph_mm)), (min(pw_mm, ph_mm), max(pw_mm, ph_mm))]:
-        margin_m = 3.0
-        gap_m = 1.0
-        pw_p, ph_p = mm_to_px(pw_m), mm_to_px(ph_m)
-        margin_p = mm_to_px(margin_m)
-        gap_p = mm_to_px(gap_m)
+    best_sol = None
 
-        sorted_items = sorted(items, key=lambda x: (x["h_mm"], x["w_mm"]), reverse=True)
+    # 尝试自适应边距与相纸方向
+    for margin_m in [2.5, 2.0, 1.5, 1.0]:
+        for gap_grp_m in [2.5, 2.0, 1.5, 1.0]:
+            for gap_m in [0.8, 0.5]:
+                for pw_m, ph_m in [(max(pw_mm, ph_mm), min(pw_mm, ph_mm)), (min(pw_mm, ph_mm), max(pw_mm, ph_mm))]:
+                    avail_w = pw_m - 2 * margin_m
+                    avail_h = ph_m - 2 * margin_m
 
-        placements = []
-        cur_x = margin_p
-        cur_y = margin_p
-        row_h = 0
-        fits = True
+                    if len(active_groups) == 1:
+                        g = active_groups[0]
+                        for cols in range(1, g["count"] + 1):
+                            rows = (g["count"] + cols - 1) // cols
+                            bw = cols * g["w_mm"] + (cols - 1) * gap_m
+                            bh = rows * g["h_mm"] + (rows - 1) * gap_m
+                            if bw <= avail_w and bh <= avail_h:
+                                placed = []
+                                ox_b = (pw_m - bw) / 2.0
+                                oy_b = (ph_m - bh) / 2.0
+                                idx = 0
+                                for r in range(rows):
+                                    for c in range(cols):
+                                        if idx < g["count"]:
+                                            x = ox_b + c * (g["w_mm"] + gap_m)
+                                            y = oy_b + r * (g["h_mm"] + gap_m)
+                                            placed.append((x, y, g["w_mm"], g["h_mm"], g["img"], g["tag"]))
+                                            idx += 1
+                                area_used = g["count"] * g["w_mm"] * g["h_mm"]
+                                sol = {"pw": pw_m, "ph": ph_m, "fits": True, "items": placed,
+                                       "util": area_used / (pw_m * ph_m), "count": g["count"]}
+                                if best_sol is None or sol["util"] > best_sol["util"]:
+                                    best_sol = sol
 
-        for it in sorted_items:
-            w_px = mm_to_px(it["w_mm"])
-            h_px = mm_to_px(it["h_mm"])
+                    elif len(active_groups) == 2:
+                        g1, g2 = active_groups[0], active_groups[1]
+                        # 尝试左右分栏
+                        for cols1 in range(1, g1["count"] + 1):
+                            rows1 = (g1["count"] + cols1 - 1) // cols1
+                            bw1 = cols1 * g1["w_mm"] + (cols1 - 1) * gap_m
+                            bh1 = rows1 * g1["h_mm"] + (rows1 - 1) * gap_m
+                            if bh1 > avail_h:
+                                continue
 
-            if cur_x + w_px > pw_p - margin_p:
-                cur_x = margin_p
-                cur_y += row_h + gap_p
-                row_h = 0
+                            for cols2 in range(1, g2["count"] + 1):
+                                rows2 = (g2["count"] + cols2 - 1) // cols2
+                                bw2 = cols2 * g2["w_mm"] + (cols2 - 1) * gap_m
+                                bh2 = rows2 * g2["h_mm"] + (rows2 - 1) * gap_m
+                                if bh2 > avail_h:
+                                    continue
 
-            if cur_y + h_px > ph_p - margin_p:
-                fits = False
+                                total_w = bw1 + gap_grp_m + bw2
+                                total_h = max(bh1, bh2)
+                                if total_w <= avail_w and total_h <= avail_h:
+                                    ox = (pw_m - total_w) / 2.0
+                                    oy1 = (ph_m - bh1) / 2.0
+                                    oy2 = (ph_m - bh2) / 2.0
+
+                                    placed = []
+                                    idx = 0
+                                    for r in range(rows1):
+                                        for c in range(cols1):
+                                            if idx < g1["count"]:
+                                                x = ox + c * (g1["w_mm"] + gap_m)
+                                                y = oy1 + r * (g1["h_mm"] + gap_m)
+                                                placed.append((x, y, g1["w_mm"], g1["h_mm"], g1["img"], g1["tag"]))
+                                                idx += 1
+                                    idx = 0
+                                    ox2 = ox + bw1 + gap_grp_m
+                                    for r in range(rows2):
+                                        for c in range(cols2):
+                                            if idx < g2["count"]:
+                                                x = ox2 + c * (g2["w_mm"] + gap_m)
+                                                y = oy2 + r * (g2["h_mm"] + gap_m)
+                                                placed.append((x, y, g2["w_mm"], g2["h_mm"], g2["img"], g2["tag"]))
+                                                idx += 1
+
+                                    area_used = g1["count"] * g1["w_mm"] * g1["h_mm"] + g2["count"] * g2["w_mm"] * g2["h_mm"]
+                                    sol = {"pw": pw_m, "ph": ph_m, "fits": True, "items": placed,
+                                           "util": area_used / (pw_m * ph_m), "count": len(placed)}
+                                    if best_sol is None or sol["util"] > best_sol["util"]:
+                                        best_sol = sol
+
+                    if best_sol and best_sol.get("fits"):
+                        break
+                if best_sol and best_sol.get("fits"):
+                    break
+            if best_sol and best_sol.get("fits"):
                 break
 
-            placements.append((cur_x, cur_y, w_px, h_px, it["img"], it["tag"]))
-            cur_x += w_px + gap_p
-            if h_px > row_h:
-                row_h = h_px
+    # 兜底：2D Shelf 装箱
+    if best_sol is None or not best_sol.get("fits"):
+        pw_m, ph_m = max(pw_mm, ph_mm), min(pw_mm, ph_mm)
+        margin_m = 2.0
+        gap_m = 0.8
 
-        total_item_area = sum(mm_to_px(it["w_mm"]) * mm_to_px(it["h_mm"]) for it in items)
-        paper_area = pw_p * ph_p
-        util = (total_item_area / paper_area) * 100.0 if paper_area > 0 else 0
+        flat_items = []
+        for g in sorted(active_groups, key=lambda x: (x["h_mm"], x["w_mm"]), reverse=True):
+            for _ in range(g["count"]):
+                flat_items.append((g["w_mm"], g["h_mm"], g["img"], g["tag"]))
 
-        plan = {
-            "pw_px": pw_p, "ph_px": ph_p, "pw_mm": pw_m, "ph_mm": ph_m,
-            "placements": placements, "fits": fits, "util": util, "count": len(placements),
-            "total_req": len(items)
-        }
+        placed = []
+        cur_x = margin_m
+        cur_y = margin_m
+        row_h = 0
+        fits = True
+        for w_m, h_m, im, tg in flat_items:
+            if cur_x + w_m > pw_m - margin_m:
+                cur_x = margin_m
+                cur_y += row_h + gap_m
+                row_h = 0
+            if cur_y + h_m > ph_m - margin_m:
+                fits = False
+                break
+            placed.append((cur_x, cur_y, w_m, h_m, im, tg))
+            cur_x += w_m + gap_m
+            if h_m > row_h:
+                row_h = h_m
 
-        if fits:
-            if best_plan is None or util > best_plan["util"]:
-                best_plan = plan
-        else:
-            if best_plan is None or plan["count"] > best_plan["count"]:
-                best_plan = plan
+        area_used = sum(it[2] * it[3] for it in placed)
+        best_sol = {"pw": pw_m, "ph": ph_m, "fits": fits, "items": placed,
+                    "util": area_used / (pw_m * ph_m), "count": len(placed)}
 
-    sheet = Image.new("RGB", (best_plan["pw_px"], best_plan["ph_px"]), (255, 255, 255))
+    # 绘制
+    pw_px = mm_to_px(best_sol["pw"])
+    ph_px = mm_to_px(best_sol["ph"])
+    sheet = Image.new("RGB", (pw_px, ph_px), (255, 255, 255))
     draw = ImageDraw.Draw(sheet)
     border_color = (200, 200, 200)
 
-    for x, y, w_px, h_px, img, tag in best_plan["placements"]:
+    for x_m, y_m, w_m, h_m, img, tag in best_sol["items"]:
+        x = mm_to_px(x_m)
+        y = mm_to_px(y_m)
+        iw = mm_to_px(w_m)
+        ih = mm_to_px(h_m)
         if img:
             sheet.paste(img, (x, y))
-        draw.rectangle([x, y, x + w_px - 1, y + h_px - 1], outline=border_color, width=1)
+        draw.rectangle([x, y, x + iw - 1, y + ih - 1], outline=border_color, width=1)
         if cut_lines:
-            _draw_dashed_rect(draw, x, y, x + w_px - 1, y + h_px - 1)
+            _draw_dashed_rect(draw, x, y, x + iw - 1, y + ih - 1)
 
-    if best_plan["fits"]:
-        info = f"自定义混排成功 · {best_plan['pw_mm']}×{best_plan['ph_mm']}mm (利用率 {best_plan['util']:.1f}%)"
+    if best_sol["fits"]:
+        info = f"自定义混排成功 · 共 {best_sol['count']} 张 · {best_sol['pw']}×{best_sol['ph']}mm (利用率 {best_sol['util']*100:.1f}%)"
     else:
-        info = f"⚠️ 超出相纸容量！已排 {best_plan['count']}/{best_plan['total_req']} 张，请减少数量或换大相纸"
+        info = f"⚠️ 超出相纸容量！已排 {best_sol['count']}/{total_req_count} 张，请减少数量或更换大相纸"
 
-    return sheet, info, best_plan["fits"]
+    return sheet, info, best_sol["fits"]
