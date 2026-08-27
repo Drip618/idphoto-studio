@@ -13,6 +13,7 @@ app.spec — PyInstaller 打包配置（Win / Mac 通用）
 """
 import os
 import sys
+from PyInstaller.utils.hooks import collect_all, collect_dynamic_libs
 
 # 适配 `python -m PyInstaller` 与直接 `pyinstaller` 两种调用方式
 spec_path = next((a for a in sys.argv if a.endswith(".spec")), "app.spec")
@@ -25,22 +26,33 @@ if sys.platform == "darwin":
 else:
     ICON = os.path.join(HERE, "app.ico") if os.path.exists(os.path.join(HERE, "app.ico")) else None
 
+# 强制收集 onnxruntime 全部二进制（核心修复：之前 onnxruntime 没打进包，导致打包态 import 失败、抠图退化为原图裁切）
+ort_datas, ort_bins, ort_hidden = collect_all("onnxruntime")
+ort_bins += collect_dynamic_libs("onnxruntime")
+
+# PySide6 也用 collect_all 确保插件齐全
+ps_datas, ps_bins, ps_hidden = collect_all("PySide6")
+
+extra_datas = ort_datas + ps_datas
+extra_bins = ort_bins + ps_bins
+extra_hidden = ort_hidden + ps_hidden + [
+    "core.idphoto_core", "ui.main_window",
+    "onnxruntime", "PIL", "PySide6",
+    "PySide6.QtCore", "PySide6.QtGui", "PySide6.QtWidgets",
+    "PySide6.QtSvg", "PySide6.QtXml",
+]
 
 a = Analysis(
     [os.path.join(HERE, "idphoto_studio.py")],
     pathex=[HERE],
-    binaries=[],
+    binaries=extra_bins,
     datas=[
         (os.path.join(HERE, "core"), "core"),
         (os.path.join(HERE, "ui"), "ui"),
         (os.path.join(HERE, "data"), "data"),
         (os.path.join(HERE, "weights"), "weights"),
-    ],
-    hiddenimports=[
-        "core.idphoto_core", "ui.main_window",
-        "onnxruntime", "PIL", "PySide6",
-        "PySide6.QtCore", "PySide6.QtGui", "PySide6.QtWidgets",
-    ],
+    ] + extra_datas,
+    hiddenimports=extra_hidden,
     hookspath=[],
     runtime_hooks=[],
     excludes=[],

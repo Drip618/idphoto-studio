@@ -141,12 +141,13 @@ class Worker(QThread):
                     if not matting.available():
                         self.progress.emit("未找到模型，改用原图裁切…")
                         bg = None
+                        matting = None
                 try:
                     id_photo = core.prepare_id_photo(
                         img, self.size["w_px"], self.size["h_px"], bg, matting)
                 except core.MattingError as e:
-                    # 抠图失败：降级为原图裁切，提示用户
-                    self.progress.emit("抠图失败，已用原图裁切：%s" % str(e)[:60])
+                    # 抠图失败：彻底降级为「不换背景」原图裁切（必须清 bg，否则会出红画布包原图）
+                    self.progress.emit("抠图失败，已用原图裁切（不换底）：%s" % str(e)[:60])
                     id_photo = core.prepare_id_photo(
                         img, self.size["w_px"], self.size["h_px"], None, None)
 
@@ -513,32 +514,33 @@ class MainWindow(QMainWindow):
         self.cached_rgba = None  # 换图清缓存
         self.current_sheet = None
         self.current_single = None
-        # 立即显示原图缩略图
+        # 导入后只显示原图（不自动裁切成证件照），让用户先看原图再操作
         try:
             from PIL import Image
             img = Image.open(p)
             self.preview.setPixmap(pil_to_pixmap(img, self.preview.width() - 40, self.preview.height() - 40))
-            self.preview_info.setText("原图已载入，正在后台抠图…")
+            self.preview_info.setText("原图已载入 · 选尺寸/底色后点「生成预览」")
         except Exception:
             pass
-        self.status.setText("已选照片，自动抠图中…")
-        # 后台抠图（缓存）
+        self.status.setText("已选照片，后台抠图中…换底色/尺寸实时刷新")
+        # 后台抠图（缓存，不抢原图显示）
         if self.mworker and self.mworker.isRunning():
             self.mworker.quit(); self.mworker.wait(2000)
         self.mworker = MattingWorker(p)
         self.mworker.done.connect(self.on_matting_done)
         self.mworker.failed.connect(self.on_matting_failed)
         self.mworker.start()
-        # 抠图同时先出一张原图裁切预览（不等抠图）
-        self._do_preview()
+        # 不立即跑证件照预览，等用户点「生成预览」或改参数防抖
 
     def on_matting_done(self, rgba):
         self.cached_rgba = rgba
-        self.status.setText("抠图完成，已缓存。换底色/尺寸将实时刷新。")
+        self.status.setText("抠图完成，已缓存。点「生成预览」看换底效果，换底色/尺寸实时刷新。")
+        # 抠图完成后自动生成一次预览（此时才显示证件照结果）
         self._do_preview()
 
     def on_matting_failed(self, msg):
-        self.status.setText(msg)
+        self.status.setText(msg + " — 可选「不换背景」仅排版")
+        # 抠图失败也生成一次原图裁切预览（不换底）
         self._do_preview()
 
     # ---------- 生成预览 ----------
@@ -625,9 +627,31 @@ class MainWindow(QMainWindow):
 
 
 def run():
+    from PySide6.QtGui import QPalette, QColor, QIcon
     app = QApplication(sys.argv)
+    # 强制 Fusion + light 调色板，避免 macOS dark 模式下文字看不见
+    app.setStyle("Fusion")
+    pal = QPalette()
+    pal.setColor(QPalette.Window, QColor("#ffffff"))
+    pal.setColor(QPalette.WindowText, QColor("#1f2937"))
+    pal.setColor(QPalette.Base, QColor("#ffffff"))
+    pal.setColor(QPalette.AlternateBase, QColor("#f4f5f7"))
+    pal.setColor(QPalette.Text, QColor("#1f2937"))
+    pal.setColor(QPalette.Button, QColor("#ffffff"))
+    pal.setColor(QPalette.ButtonText, QColor("#374151"))
+    pal.setColor(QPalette.ToolTipBase, QColor("#1f2937"))
+    pal.setColor(QPalette.ToolTipText, QColor("#ffffff"))
+    pal.setColor(QPalette.Highlight, QColor("#2563eb"))
+    pal.setColor(QPalette.HighlightedText, QColor("#ffffff"))
+    app.setPalette(pal)
     app.setStyleSheet(QSS)
+    # 应用图标（Dock / 标题栏）
+    icon_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.icns")
+    if sys.platform == "darwin" and os.path.exists(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
     w = MainWindow()
+    w.raise_()
+    w.activateWindow()
     w.show()
     sys.exit(app.exec())
 

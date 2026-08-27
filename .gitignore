@@ -20,3 +20,4 @@ Thumbs.db
 
 # Windows 手动构建包（GitHub Actions 不需要，避免与根目录源码重复）
 windows-kit/
+ci_artifact/
