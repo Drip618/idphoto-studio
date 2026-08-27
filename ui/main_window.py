@@ -857,11 +857,32 @@ class MainWindow(QMainWindow):
         self.slider_pos_y.setValue(0)
         self.slider_pos_y.valueChanged.connect(self.schedule_render)
         row_pos.addWidget(self.slider_pos_y)
-        btn_reset_frame = QPushButton("↺ 重置")
+        self.lbl_pos_y_val = QLabel("0%")
+        self.lbl_pos_y_val.setFixedWidth(40)
+        self.slider_pos_y.valueChanged.connect(lambda v: self.lbl_pos_y_val.setText(f"{v}%"))
+        row_pos.addWidget(self.lbl_pos_y_val)
+        framing_l.addLayout(row_pos)
+
+        row_pos_x = QHBoxLayout()
+        row_pos_x.addWidget(QLabel("左右位置:"))
+        self.slider_pos_x = QSlider(Qt.Horizontal)
+        self.slider_pos_x.setRange(-20, 20)
+        self.slider_pos_x.setValue(0)
+        self.slider_pos_x.valueChanged.connect(self.schedule_render)
+        row_pos_x.addWidget(self.slider_pos_x)
+        self.lbl_pos_x_val = QLabel("0%")
+        self.lbl_pos_x_val.setFixedWidth(40)
+        self.slider_pos_x.valueChanged.connect(lambda v: self.lbl_pos_x_val.setText(f"{v}%"))
+        row_pos_x.addWidget(self.lbl_pos_x_val)
+        framing_l.addLayout(row_pos_x)
+
+        row_reset = QHBoxLayout()
+        row_reset.addStretch()
+        btn_reset_frame = QPushButton("↺ 重置微调参数")
         btn_reset_frame.setObjectName("SecondaryBtn")
         btn_reset_frame.clicked.connect(self.reset_framing)
-        row_pos.addWidget(btn_reset_frame)
-        framing_l.addLayout(row_pos)
+        row_reset.addWidget(btn_reset_frame)
+        framing_l.addLayout(row_reset)
 
         cl.addWidget(framing_box)
 
@@ -1243,13 +1264,14 @@ class MainWindow(QMainWindow):
 
         zoom_val = self.slider_zoom.value() / 100.0
         pos_y_val = self.slider_pos_y.value() / 100.0
+        pos_x_val = self.slider_pos_x.value() / 100.0
 
         self._render_req_id += 1
         worker = RenderWorker(
             active_img, size_dict, color_dict, mode_idx, extra_params,
             self.chk_cut_lines.isChecked(), self.chk_add_text.isChecked(),
             self.cached_rgba, self._render_req_id,
-            zoom_ratio=zoom_val, offset_y_ratio=pos_y_val, offset_x_ratio=0.0
+            zoom_ratio=zoom_val, offset_y_ratio=pos_y_val, offset_x_ratio=pos_x_val
         )
         self._running_threads.append(worker)
         worker.done.connect(self.on_render_done)
@@ -1313,6 +1335,7 @@ class MainWindow(QMainWindow):
     def reset_framing(self):
         self.slider_zoom.setValue(100)
         self.slider_pos_y.setValue(0)
+        self.slider_pos_x.setValue(0)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
