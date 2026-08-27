@@ -2,12 +2,15 @@
 """
 ui/main_window.py — 证件照工作室 macOS / Windows 工业级原生桌面界面
 ===================================================================
-- 苹果 macOS 原生视觉设计规范（SF Pro / 苹方，扁平优雅、原生卡片、通透灰白调）
-- 照相馆国标证件照构图 (Head-Centric Standard)：头部饱满、锁骨与双肩自然对称展开，彻底根除右侧缺角
-- 照相馆经典混排 (5寸上2二寸+下4一寸 / 6寸上4二寸+下4一寸)：上下分段、整齐严密对齐
-- 自由多尺寸自定义混排装箱引擎（智能分栏与自适应边距）
-- 界面布局全面优化：禁绝横向滚动条、垂直表单无截断、色块文字完整
-- 新增「✂️ 手动选区/裁剪人像」交互式工具：支持合影多人物框选与复杂背景精确定位
+- 线程安全架构：杜绝 QThread GC 销毁引发的意外退出/崩溃 (Abort Trap: 6)
+- 照相馆国标证件照构图 (Head-Centric Standard)：头部饱满、锁骨与双肩自然对称展开，彻底根除两侧露底色
+- 照相馆规范相纸排版：
+  - 5寸相纸 (89x127mm 竖版): 上2张二寸 + 下6张一寸 (3列x2行，满幅无大块留白)
+  - 6寸相纸 (102x152mm 竖版): 上4张二寸 + 下4张一寸 (4列x1行，满幅规整)
+  - 5寸单规格: 9张一寸 / 4张二寸
+  - 6寸单规格: 16张一寸 / 8张二寸
+- 自由多尺寸自定义混排装箱引擎
+- 新增「✂️ 手动选区/裁剪人像」交互式工具
 - 预览区浅灰精致相框，白底照片绝不融为一体
 - 底部操作栏固定无闪烁，支持用户自主选择导出格式 (PNG / JPG / 两种都要)
 """
@@ -349,12 +352,13 @@ class CropDialog(QDialog):
 
 # ============================================================ 后台 Worker
 class MattingWorker(QThread):
-    done = Signal(object)
-    failed = Signal(str)
+    done = Signal(object, int)
+    failed = Signal(str, int)
 
-    def __init__(self, image_input):
+    def __init__(self, image_input, req_id=0):
         super().__init__()
         self.image_input = image_input
+        self.req_id = req_id
 
     def run(self):
         try:
@@ -365,20 +369,20 @@ class MattingWorker(QThread):
                 img = self.image_input
             m = core.Matting()
             if not m.available():
-                self.failed.emit("未找到抠图模型，已转为原图裁切")
+                self.failed.emit("未找到抠图模型，已转为原图裁切", self.req_id)
                 return
             rgba = m.remove(img)
-            self.done.emit(rgba)
+            self.done.emit(rgba, self.req_id)
         except Exception as e:
-            self.failed.emit(f"抠图失败：{e}")
+            self.failed.emit(f"抠图失败：{e}", self.req_id)
 
 
 class RenderWorker(QThread):
-    done = Signal(object, str, bool, object)
-    error = Signal(str)
+    done = Signal(object, str, bool, object, int)
+    error = Signal(str, int)
 
     def __init__(self, image_input, size_dict, color_dict, mode_idx, extra_params,
-                 cut_lines, add_text, cached_rgba=None):
+                 cut_lines, add_text, cached_rgba=None, req_id=0):
         super().__init__()
         self.image_input = image_input
         self.size_dict = size_dict
@@ -388,6 +392,7 @@ class RenderWorker(QThread):
         self.cut_lines = cut_lines
         self.add_text = add_text
         self.cached_rgba = cached_rgba
+        self.req_id = req_id
 
     def run(self):
         try:
@@ -413,12 +418,12 @@ class RenderWorker(QThread):
             # 0: 仅单张证件照 (默认)
             if self.mode_idx == 0:
                 info = f"单张 {self.size_dict['name']} · {self.size_dict['w_px']}×{self.size_dict['h_px']} px (300 DPI)"
-                self.done.emit(id_photo, info, True, id_photo)
+                self.done.emit(id_photo, info, True, id_photo, self.req_id)
                 return
 
-            # 2: 照相馆经典规整混排
+            # 2: 照相馆标准规整混排
             if self.mode_idx == 2:
-                mix_type = self.extra_params.get("mix_type", "5in_2_4")
+                mix_type = self.extra_params.get("mix_type", "5in_2_6")
                 if self.cached_rgba is not None:
                     id_1in = core.create_standard_id_photo(self.cached_rgba, core.mm_to_px(25), core.mm_to_px(35), bg_rgb)
                     id_2in = core.create_standard_id_photo(self.cached_rgba, core.mm_to_px(35), core.mm_to_px(49), bg_rgb)
@@ -428,7 +433,7 @@ class RenderWorker(QThread):
                     id_2in = core.prepare_id_photo(img, core.mm_to_px(35), core.mm_to_px(49), bg_rgb, matting)
 
                 sheet, info = core.compose_mixed_sheet(id_1in, id_2in, mix_type=mix_type, cut_lines=self.cut_lines, add_text=self.add_text)
-                self.done.emit(sheet, info, False, id_photo)
+                self.done.emit(sheet, info, False, id_photo, self.req_id)
                 return
 
             # 3: 自由多尺寸自定义混排
@@ -444,7 +449,7 @@ class RenderWorker(QThread):
                         images_dict[k] = core.prepare_id_photo(img, core.mm_to_px(w_mm), core.mm_to_px(h_mm), bg_rgb, matting)
 
                 sheet, info, fits = core.compose_custom_mixed_sheet(images_dict, counts, paper, cut_lines=self.cut_lines)
-                self.done.emit(sheet, info, False, id_photo)
+                self.done.emit(sheet, info, False, id_photo, self.req_id)
                 return
 
             # 1: 照相馆标准相纸排版, 4: 自定义网格
@@ -470,10 +475,10 @@ class RenderWorker(QThread):
 
             ori_tag = "横放" if lay["paper_w_mm"] > lay["paper_h_mm"] else "竖放"
             info = f"冲印排版 · {lay['count']} 张 ({lay['cols']}列 × {lay['rows']}行 · {ori_tag}) · {lay['paper'][0]}×{lay['paper'][1]} px"
-            self.done.emit(sheet, info, False, id_photo)
+            self.done.emit(sheet, info, False, id_photo, self.req_id)
         except Exception as e:
             import traceback
-            self.error.emit(f"{e}\n{traceback.format_exc()[-300:]}")
+            self.error.emit(f"{e}\n{traceback.format_exc()[-300:]}", self.req_id)
 
 
 # ============================================================ 批量处理
@@ -704,8 +709,10 @@ class MainWindow(QMainWindow):
         self.current_single_id = None
         self.is_single_preview = True
 
-        self.mworker = None
-        self.rworker = None
+        # 线程安全引用保护池 (防止 GC 析构运行中线程导致 abort 崩溃)
+        self._running_threads = []
+        self._render_req_id = 0
+        self._matting_req_id = 0
 
         self.render_timer = QTimer(self)
         self.render_timer.setSingleShot(True)
@@ -724,7 +731,7 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Horizontal)
         splitter.setHandleWidth(4)
 
-        # ----------------- 左侧控制面板 (原生 macOS 风格，无横向滚动条) -----------------
+        # ----------------- 左侧控制面板 -----------------
         left_container = QWidget()
         left_container.setMinimumWidth(390)
         left_container.setMaximumWidth(460)
@@ -876,14 +883,14 @@ class MainWindow(QMainWindow):
         pl.addWidget(self.paper_container)
         self.paper_container.setVisible(False)
 
-        # 经典混排类型容器 (模式 2)
+        # 经典混排类型容器 (模式 2: 5寸上2二寸+下6一寸 / 6寸上4二寸+下4一寸)
         self.mix_container = QWidget()
         mix_l = QVBoxLayout(self.mix_container); mix_l.setContentsMargins(0, 0, 0, 0); mix_l.setSpacing(4)
         mix_l.addWidget(QLabel("照相馆标准混排方案:"))
         self.mix_combo = QComboBox()
-        self.mix_combo.addItem("5寸标准混排 · 上2张二寸 + 下4张一寸 (整齐对齐)", "5in_2_4")
-        self.mix_combo.addItem("6寸标准混排 · 上4张二寸 + 下4张一寸 (经典多规格)", "6in_4_4")
-        self.mix_combo.addItem("6寸实用混排 · 上2张二寸 + 下8张一寸 (多一寸版)", "6in_2_8")
+        self.mix_combo.addItem("5寸标准混排 · 上2张二寸 + 下6张一寸 (整齐满幅)", "5in_2_6")
+        self.mix_combo.addItem("6寸标准混排 · 上4张二寸 + 下4张一寸 (规整满幅)", "6in_4_4")
+        self.mix_combo.addItem("6寸多一寸混排 · 上2张二寸 + 下8张一寸 (高性价比)", "6in_2_8")
         self.mix_combo.currentIndexChanged.connect(self.schedule_render)
         mix_l.addWidget(self.mix_combo)
         pl.addWidget(self.mix_container)
@@ -903,7 +910,7 @@ class MainWindow(QMainWindow):
         self.spin_2in.valueChanged.connect(self.schedule_render)
         form_counts.addRow("二寸 (35×49mm):", self.spin_2in)
 
-        self.spin_1in = QSpinBox(); self.spin_1in.setRange(0, 24); self.spin_1in.setValue(4)
+        self.spin_1in = QSpinBox(); self.spin_1in.setRange(0, 24); self.spin_1in.setValue(6)
         self.spin_1in.setFixedWidth(80)
         self.spin_1in.valueChanged.connect(self.schedule_render)
         form_counts.addRow("一寸 (25×35mm):", self.spin_1in)
@@ -930,11 +937,11 @@ class MainWindow(QMainWindow):
         gl = QVBoxLayout(self.grid_container); gl.setContentsMargins(0, 0, 0, 0); gl.setSpacing(4)
         grow = QHBoxLayout()
         grow.addWidget(QLabel("列数:"))
-        self.spin_cols = QSpinBox(); self.spin_cols.setRange(1, 10); self.spin_cols.setValue(4)
+        self.spin_cols = QSpinBox(); self.spin_cols.setRange(1, 10); self.spin_cols.setValue(3)
         self.spin_cols.valueChanged.connect(self.schedule_render)
         grow.addWidget(self.spin_cols)
         grow.addWidget(QLabel("行数:"))
-        self.spin_rows = QSpinBox(); self.spin_rows.setRange(1, 10); self.spin_rows.setValue(2)
+        self.spin_rows = QSpinBox(); self.spin_rows.setRange(1, 10); self.spin_rows.setValue(3)
         self.spin_rows.valueChanged.connect(self.schedule_render)
         grow.addWidget(self.spin_rows)
         gl.addLayout(grow)
@@ -1156,23 +1163,28 @@ class MainWindow(QMainWindow):
         self.progress_bar.setRange(0, 0)
         self.status.setText("正在进行智能发丝抠图…")
 
-        if self.mworker and self.mworker.isRunning():
-            self.mworker.quit(); self.mworker.wait(1000)
+        self._matting_req_id += 1
+        worker = MattingWorker(self.active_pil_image, self._matting_req_id)
+        self._running_threads.append(worker)
 
-        self.mworker = MattingWorker(self.active_pil_image)
-        self.mworker.done.connect(self.on_matting_done)
-        self.mworker.failed.connect(self.on_matting_failed)
-        self.mworker.start()
+        worker.done.connect(self.on_matting_done)
+        worker.failed.connect(self.on_matting_failed)
+        worker.finished.connect(lambda w=worker: self._cleanup_thread(w))
+        worker.start()
 
         self._do_render()
 
-    def on_matting_done(self, rgba):
+    def on_matting_done(self, rgba, req_id):
+        if req_id != self._matting_req_id:
+            return
         self.cached_rgba = rgba
         self.status.setText("✓ 智能发丝抠图就绪")
         self.progress_bar.setVisible(False)
         self._do_render()
 
-    def on_matting_failed(self, msg):
+    def on_matting_failed(self, msg, req_id):
+        if req_id != self._matting_req_id:
+            return
         self.status.setText(msg)
         self.progress_bar.setVisible(False)
         self._do_render()
@@ -1206,7 +1218,7 @@ class MainWindow(QMainWindow):
                 extra_params["rows"] = self.spin_rows.value()
                 extra_params["cols"] = self.spin_cols.value()
         elif mode_idx == 2:
-            extra_params["mix_type"] = self.mix_combo.currentData() or "5in_2_4"
+            extra_params["mix_type"] = self.mix_combo.currentData() or "5in_2_6"
         elif mode_idx == 3:
             extra_params["paper"] = self.paper_combo.currentData() or core.load_papers()[0]
             extra_params["counts"] = {
@@ -1219,18 +1231,25 @@ class MainWindow(QMainWindow):
         cut_lines = self.chk_cut_lines.isChecked()
         add_text = self.chk_add_text.isChecked()
 
-        if self.rworker and self.rworker.isRunning():
-            self.rworker.quit(); self.rworker.wait(500)
-
-        self.rworker = RenderWorker(
+        self._render_req_id += 1
+        worker = RenderWorker(
             active_img, size_dict, color_dict, mode_idx, extra_params,
-            cut_lines, add_text, cached_rgba=self.cached_rgba
+            cut_lines, add_text, cached_rgba=self.cached_rgba, req_id=self._render_req_id
         )
-        self.rworker.done.connect(self.on_render_done)
-        self.rworker.error.connect(self.on_render_error)
-        self.rworker.start()
+        self._running_threads.append(worker)
 
-    def on_render_done(self, result_image, info_text, is_single, single_id_image):
+        worker.done.connect(self.on_render_done)
+        worker.error.connect(self.on_render_error)
+        worker.finished.connect(lambda w=worker: self._cleanup_thread(w))
+        worker.start()
+
+    def _cleanup_thread(self, thread_obj):
+        if thread_obj in self._running_threads:
+            self._running_threads.remove(thread_obj)
+
+    def on_render_done(self, result_image, info_text, is_single, single_id_image, req_id):
+        if req_id != self._render_req_id:
+            return
         self.current_preview_image = result_image
         self.current_single_id = single_id_image
         self.is_single_preview = is_single
@@ -1240,7 +1259,9 @@ class MainWindow(QMainWindow):
         self.status.setText("✓ 渲染完成，可直接导出")
         self._update_preview_display()
 
-    def on_render_error(self, err):
+    def on_render_error(self, err, req_id):
+        if req_id != self._render_req_id:
+            return
         self.status.setText("渲染出错")
         self.lbl_preview_info.setText(f"错误: {err[:60]}")
 
