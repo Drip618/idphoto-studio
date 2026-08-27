@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-ui/main_window.py — 证件照工作室 Studio 照相馆专业版
+ui/main_window.py — 证件照工作室 Studio 照相馆旗舰版
 =========================================================================
-- 彻底移除无用空壳控件（如单人排版下的行/列优先单选框）
-- 彻底消除点击闪烁（原子平滑更新，无白屏黑屏过渡）
-- 照相馆标准冲印排版（6寸8张二寸/16张一寸，5寸9张一寸/4张二寸，5寸与6寸混排）
-- 真正国标贴底构图（头顶留白8%，胸口肩膀延伸贴死相片下边缘）
+- 解决 QButtonGroup 遗留引用与 App 启动问题，确保秒开
+- 彻底消除点击闪烁（原子平滑更新，无白屏过渡）
+- 引入「📂 批量处理」功能（多图/整目录批量智能抠图、换底色、多规格排版导出）
+- 白底相纸浅灰虚线裁切框，打印裁切一目了然
+- 双模型发丝级智能抠图与真正国标贴底构图
 """
 import os
 import sys
@@ -14,7 +15,7 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton, QComboBox, QLineEdit, QSpinBox, QFileDialog,
     QMessageBox, QDialog, QDialogButtonBox, QTabWidget, QListWidget,
     QProgressBar, QDoubleSpinBox, QFrame, QSplitter, QCheckBox, QColorDialog,
-    QScrollArea, QSizePolicy
+    QScrollArea, QSizePolicy, QButtonGroup
 )
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSettings, QSize
 from PySide6.QtGui import (
@@ -153,7 +154,7 @@ QProgressBar {
     background-color: #e2e8f0;
     border: none;
     border-radius: 3px;
-    height: 4px;
+    height: 5px;
 }
 QProgressBar::chunk {
     background-color: #2563eb;
@@ -285,6 +286,206 @@ class RenderWorker(QThread):
             self.error.emit(f"{e}\n{traceback.format_exc()[-300:]}")
 
 
+# ============================================================ 批量处理后台 Worker
+class BatchWorker(QThread):
+    progress = Signal(int, int, str) # current, total, filename
+    finished = Signal(int, list)     # success_count, saved_files
+    error = Signal(str)
+
+    def __init__(self, file_paths, size_dict, color_dict, export_single, export_sheet, paper_dict, out_dir):
+        super().__init__()
+        self.file_paths = file_paths
+        self.size_dict = size_dict
+        self.color_dict = color_dict
+        self.export_single = export_single
+        self.export_sheet = export_sheet
+        self.paper_dict = paper_dict
+        self.out_dir = out_dir
+
+    def run(self):
+        try:
+            from PIL import Image
+            total = len(self.file_paths)
+            saved = []
+            m = core.Matting() if self.color_dict["rgb"] is not None else None
+
+            for idx, p in enumerate(self.file_paths):
+                fname = os.path.basename(p)
+                base = os.path.splitext(fname)[0]
+                self.progress.emit(idx + 1, total, fname)
+
+                try:
+                    img = Image.open(p)
+                    id_photo = core.prepare_id_photo(
+                        img, self.size_dict["w_px"], self.size_dict["h_px"],
+                        self.color_dict["rgb"], m
+                    )
+
+                    # 导出单张
+                    if self.export_single:
+                        p_png = os.path.join(self.out_dir, f"{base}_{self.size_dict['name']}_单张.png")
+                        p_jpg = os.path.join(self.out_dir, f"{base}_{self.size_dict['name']}_单张.jpg")
+                        id_photo.save(p_png, "PNG")
+                        id_photo.save(p_jpg, "JPEG", quality=95)
+                        saved.append(p_png)
+
+                    # 导出排版
+                    if self.export_sheet and self.paper_dict:
+                        lay = core.compute_layout(
+                            self.paper_dict["w_mm"], self.paper_dict["h_mm"],
+                            self.size_dict["w_mm"], self.size_dict["h_mm"]
+                        )
+                        sheet = core.compose_sheet(
+                            id_photo, lay,
+                            size_name=self.size_dict["name"],
+                            size_dims=f"{self.size_dict['w_mm']}×{self.size_dict['h_mm']}mm"
+                        )
+                        tag = self.paper_dict["name"].split(" ")[0]
+                        p_sheet_png = os.path.join(self.out_dir, f"{base}_{tag}_{self.size_dict['name']}_排版.png")
+                        p_sheet_jpg = os.path.join(self.out_dir, f"{base}_{tag}_{self.size_dict['name']}_排版.jpg")
+                        sheet.save(p_sheet_png, "PNG")
+                        sheet.save(p_sheet_jpg, "JPEG", quality=95)
+                        saved.append(p_sheet_png)
+
+                except Exception as ex:
+                    continue
+
+            self.finished.emit(len(saved), saved)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+# ============================================================ 批量处理弹窗
+class BatchDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("📂 批量证件照冲印处理")
+        self.resize(560, 480)
+        self.file_paths = []
+        self.worker = None
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        # 1. 文件选择
+        f_box = QFrame(); f_box.setObjectName("Card")
+        fl = QVBoxLayout(f_box); fl.setContentsMargins(12, 10, 12, 10); fl.setSpacing(6)
+        fl.addWidget(QLabel("1. 选择要批量处理的人像照片:"))
+        btn_row = QHBoxLayout()
+        b_sel_files = QPushButton("多选照片文件…")
+        b_sel_files.clicked.connect(self.select_files)
+        b_sel_dir = QPushButton("选择整个文件夹…")
+        b_sel_dir.clicked.connect(self.select_dir)
+        btn_row.addWidget(b_sel_files)
+        btn_row.addWidget(b_sel_dir)
+        fl.addLayout(btn_row)
+        self.lbl_file_count = QLabel("尚未选择照片文件")
+        self.lbl_file_count.setObjectName("SubTitle")
+        fl.addWidget(self.lbl_file_count)
+        layout.addWidget(f_box)
+
+        # 2. 目标规格与底色
+        opt_box = QFrame(); opt_box.setObjectName("Card")
+        ol = QFormLayout(opt_box); ol.setContentsMargins(12, 10, 12, 10); ol.setSpacing(8)
+        self.batch_size = QComboBox()
+        for s in core.load_sizes():
+            self.batch_size.addItem(f"{s['name']} ({s['w_mm']}×{s['h_mm']}mm)", s)
+        ol.addRow("目标规格:", self.batch_size)
+
+        self.batch_color = QComboBox()
+        for c in core.load_colors():
+            self.batch_color.addItem(c["name"], c)
+        ol.addRow("目标底色:", self.batch_color)
+
+        self.batch_paper = QComboBox()
+        for p in core.load_papers():
+            self.batch_paper.addItem(p["name"], p)
+        ol.addRow("排版相纸:", self.batch_paper)
+
+        layout.addWidget(opt_box)
+
+        # 3. 导出选项
+        exp_box = QFrame(); exp_box.setObjectName("Card")
+        el = QVBoxLayout(exp_box); el.setContentsMargins(12, 10, 12, 10); el.setSpacing(6)
+        self.cb_exp_single = QCheckBox("导出单张证件照 (PNG + JPG 300DPI)")
+        self.cb_exp_single.setChecked(True)
+        self.cb_exp_sheet = QCheckBox("导出相纸排版冲印图 (自动排满相纸)")
+        self.cb_exp_sheet.setChecked(True)
+        el.addWidget(self.cb_exp_single)
+        el.addWidget(self.cb_exp_sheet)
+        layout.addWidget(exp_box)
+
+        # 4. 进度条
+        self.pbar = QProgressBar()
+        self.pbar.setVisible(False)
+        layout.addWidget(self.pbar)
+        self.lbl_status = QLabel("就绪")
+        self.lbl_status.setObjectName("SubTitle")
+        layout.addWidget(self.lbl_status)
+
+        # 5. 底部按钮
+        b_start = QPushButton("🚀 开始批量处理并导出")
+        b_start.setObjectName("PrimaryBtn")
+        b_start.clicked.connect(self.start_batch)
+        layout.addWidget(b_start)
+
+    def select_files(self):
+        files, _ = QFileDialog.getOpenFileNames(self, "多选照片", "", "图片 (*.jpg *.jpeg *.png *.bmp *.webp)")
+        if files:
+            self.file_paths = files
+            self.lbl_file_count.setText(f"已选择 {len(files)} 张照片")
+
+    def select_dir(self):
+        d = QFileDialog.getExistingDirectory(self, "选择包含照片的文件夹")
+        if d:
+            valid = []
+            for root, _, fs in os.walk(d):
+                for f in fs:
+                    if f.lower().endswith((".jpg", ".jpeg", ".png", ".bmp", ".webp")):
+                        valid.append(os.path.join(root, f))
+            self.file_paths = valid
+            self.lbl_file_count.setText(f"文件夹内共找到 {len(valid)} 张照片: {d}")
+
+    def start_batch(self):
+        if not self.file_paths:
+            QMessageBox.warning(self, "提示", "请先选择照片或文件夹。")
+            return
+
+        out_dir = QFileDialog.getExistingDirectory(self, "选择保存导出文件夹")
+        if not out_dir:
+            return
+
+        self.pbar.setVisible(True)
+        self.pbar.setRange(0, len(self.file_paths))
+        self.pbar.setValue(0)
+
+        s_dict = self.batch_size.currentData()
+        c_dict = self.batch_color.currentData()
+        p_dict = self.batch_paper.currentData()
+
+        self.worker = BatchWorker(
+            self.file_paths, s_dict, c_dict,
+            self.cb_exp_single.isChecked(), self.cb_exp_sheet.isChecked(),
+            p_dict, out_dir
+        )
+        self.worker.progress.connect(self.on_progress)
+        self.worker.finished.connect(self.on_finished)
+        self.worker.error.connect(lambda e: QMessageBox.critical(self, "错误", e))
+        self.worker.start()
+
+    def on_progress(self, cur, total, fname):
+        self.pbar.setValue(cur)
+        self.lbl_status.setText(f"正在处理 ({cur}/{total}): {fname}…")
+
+    def on_finished(self, count, saved):
+        self.pbar.setVisible(False)
+        self.lbl_status.setText(f"✓ 批量处理完成，共生成 {count} 个文件！")
+        QMessageBox.information(self, "批量完成", f"已成功处理并生成 {count} 个图片文件！\n保存在所选文件夹。")
+        self.accept()
+
+
+# ============================================================ 主窗口
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -335,6 +536,12 @@ class MainWindow(QMainWindow):
         t_box.addWidget(subtitle)
         h_box.addLayout(t_box)
         h_box.addStretch()
+
+        b_batch_top = QPushButton("📂 批量处理…")
+        b_batch_top.setObjectName("SecondaryBtn")
+        b_batch_top.clicked.connect(self.open_batch_dialog)
+        h_box.addWidget(b_batch_top)
+
         left_layout.addLayout(h_box)
 
         # 2. 照片导入卡片
@@ -478,7 +685,7 @@ class MainWindow(QMainWindow):
 
         # 辅助选项
         opt_line = QHBoxLayout()
-        self.cb_cutlines = QCheckBox("打印裁切参考标线")
+        self.cb_cutlines = QCheckBox("打印裁切虚线框")
         self.cb_cutlines.setChecked(True)
         self.cb_cutlines.toggled.connect(self.trigger_render_debounce)
         opt_line.addWidget(self.cb_cutlines)
@@ -504,7 +711,12 @@ class MainWindow(QMainWindow):
         b_preset.clicked.connect(self.open_preset_dialog)
         bottom_tools.addWidget(b_preset)
 
-        b_refresh = QPushButton("🔄 刷新预览")
+        b_batch = QPushButton("📂 批量处理…")
+        b_batch.setObjectName("SecondaryBtn")
+        b_batch.clicked.connect(self.open_batch_dialog)
+        bottom_tools.addWidget(b_batch)
+
+        b_refresh = QPushButton("🔄 刷新")
         b_refresh.setObjectName("SecondaryBtn")
         b_refresh.clicked.connect(self.render_now)
         bottom_tools.addWidget(b_refresh)
@@ -631,7 +843,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.fileinfo_label.setText(str(e))
 
-        self.status_label.setText("正在执行高精发丝级抠图…")
+        self.status_label.setText("正在执行发丝级智能抠图…")
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)
 
@@ -697,11 +909,11 @@ class MainWindow(QMainWindow):
         if mode == 0 and s and p:
             lay = core.compute_layout(p["w_mm"], p["h_mm"], s["w_mm"], s["h_mm"])
             ori_tag = "横放" if lay["paper_w_mm"] > lay["paper_h_mm"] else "竖放"
-            self.paper_info_badge.setText(f"💡 自动标准排版: {lay['count']} 张 ({lay['cols']}列 × {lay['rows']}行 · {ori_tag})")
+            self.paper_info_badge.setText(f"💡 规范排版: {lay['count']} 张 ({lay['cols']}列 × {lay['rows']}行 · {ori_tag})")
         elif mode == 1:
             self.paper_info_badge.setText("💡 输出单张证件照")
         elif mode == 3:
-            self.paper_info_badge.setText("💡 混排模板 · 所有照片正立排列")
+            self.paper_info_badge.setText("💡 混排模板 · 所有照片正立直放")
         else:
             self.paper_info_badge.setText("")
 
@@ -723,7 +935,7 @@ class MainWindow(QMainWindow):
             self.opt_paper.addItem(f"{p['name']}", p)
         self.opt_paper.blockSignals(False)
 
-    # ---------- 渲染管理 (平滑无闪烁替换) ----------
+    # ---------- 渲染管理 ----------
     def trigger_render_debounce(self):
         if self.input_path:
             self.debounce_timer.start(180)
@@ -768,7 +980,6 @@ class MainWindow(QMainWindow):
         self.worker.start()
 
     def on_render_done(self, img, info, is_single, single_photo):
-        # 原子平滑替换，避免任何白屏或闪烁
         self.current_render_image = img
         self.current_sheet = None if is_single else img
         self.current_single = single_photo
@@ -847,6 +1058,10 @@ class MainWindow(QMainWindow):
         self.refresh_sizes()
         self.refresh_papers()
         self.trigger_render_debounce()
+
+    def open_batch_dialog(self):
+        d = BatchDialog(self)
+        d.exec()
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
