@@ -2,11 +2,11 @@
 """
 ui/main_window.py — 证件照工作室 macOS / Windows 工业级原生桌面界面
 ===================================================================
-- 苹果 Studio 级美学设计，QSettings 本地持久化记忆窗口尺寸与目录
-- 默认进入单张证件照模式，导入照片与换底色绝不自作主张排版
-- 相纸排序 5寸/6寸 置顶，从小到大规范排列
-- 照相馆黄金对称混排 + 自由多尺寸自定义混排装箱引擎（完美支持 5寸/6寸 自定义组合）
-- 界面布局全面优化：禁绝横向滚动条、数量列表垂直对齐、按钮文字完整显示
+- 苹果 macOS 原生视觉设计规范（SF Pro / 苹方，扁平优雅、原生卡片、通透灰白调）
+- 照相馆国标证件照构图 (Head-Centric Standard)：头部饱满、锁骨与双肩自然对称展开，彻底根除右侧缺角
+- 照相馆经典混排 (5寸上2二寸+下4一寸 / 6寸上4二寸+下4一寸)：上下分段、整齐严密对齐
+- 自由多尺寸自定义混排装箱引擎（智能分栏与自适应边距）
+- 界面布局全面优化：禁绝横向滚动条、垂直表单无截断、色块文字完整
 - 新增「✂️ 手动选区/裁剪人像」交互式工具：支持合影多人物框选与复杂背景精确定位
 - 预览区浅灰精致相框，白底照片绝不融为一体
 - 底部操作栏固定无闪烁，支持用户自主选择导出格式 (PNG / JPG / 两种都要)
@@ -31,17 +31,18 @@ from core import idphoto_core as core
 
 PROJECT_ROOT = core.PROJECT_ROOT
 
+# macOS 原生风格 QSS
 QSS = """
 QMainWindow, QWidget {
-    background-color: #f1f5f9;
-    color: #1e293b;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    background-color: #f6f8fa;
+    color: #1f2328;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
     font-size: 13px;
 }
 QFrame#Card {
     background-color: #ffffff;
-    border: 1px solid #e2e8f0;
-    border-radius: 10px;
+    border: 1px solid #e1e4e8;
+    border-radius: 8px;
 }
 QLabel#SectionTitle {
     font-size: 13px;
@@ -49,93 +50,93 @@ QLabel#SectionTitle {
     color: #0f172a;
 }
 QLabel#AppLogo {
-    font-size: 17px;
+    font-size: 16px;
     font-weight: 800;
-    color: #1e293b;
+    color: #0f172a;
 }
 QLabel#SubTitle {
     font-size: 11px;
-    color: #64748b;
+    color: #656d76;
 }
 QLabel#Badge {
     background-color: #eff6ff;
-    color: #2563eb;
-    border: 1px solid #bfdbfe;
+    color: #0969da;
+    border: 1px solid #d0e7ff;
     border-radius: 4px;
-    padding: 4px 8px;
+    padding: 3px 6px;
     font-size: 11px;
     font-weight: 600;
 }
 QLabel#WarnBadge {
-    background-color: #fef2f2;
-    color: #dc2626;
-    border: 1px solid #fecaca;
+    background-color: #ffebe9;
+    color: #cf222e;
+    border: 1px solid #ffcecb;
     border-radius: 4px;
-    padding: 4px 8px;
+    padding: 3px 6px;
     font-size: 11px;
     font-weight: 600;
 }
 QComboBox, QLineEdit, QSpinBox {
     background-color: #ffffff;
-    border: 1px solid #cbd5e1;
+    border: 1px solid #d0d7de;
     border-radius: 6px;
     padding: 5px 8px;
-    color: #1e293b;
-    selection-background-color: #3b82f6;
+    color: #1f2328;
+    selection-background-color: #0969da;
     min-height: 22px;
 }
 QComboBox:hover, QLineEdit:hover, QSpinBox:hover {
-    border-color: #94a3b8;
+    border-color: #8c959f;
 }
 QComboBox:focus, QLineEdit:focus, QSpinBox:focus {
-    border-color: #2563eb;
+    border-color: #0969da;
 }
 QComboBox QAbstractItemView {
     background-color: #ffffff;
-    color: #1e293b;
-    border: 1px solid #cbd5e1;
-    selection-background-color: #eff6ff;
-    selection-color: #2563eb;
+    color: #1f2328;
+    border: 1px solid #d0d7de;
+    selection-background-color: #f3f4f6;
+    selection-color: #0969da;
 }
 QPushButton {
     background-color: #ffffff;
-    border: 1px solid #cbd5e1;
+    border: 1px solid #d0d7de;
     border-radius: 6px;
-    padding: 6px 12px;
-    color: #334155;
+    padding: 5px 12px;
+    color: #24292f;
     font-weight: 500;
     min-height: 22px;
 }
 QPushButton:hover {
-    background-color: #f8fafc;
-    border-color: #94a3b8;
+    background-color: #f6f8fa;
+    border-color: #8c959f;
 }
 QPushButton#PrimaryBtn {
-    background-color: #2563eb;
-    border: 1px solid #1d4ed8;
+    background-color: #0969da;
+    border: 1px solid #0860ca;
     color: #ffffff;
     font-weight: 600;
     border-radius: 6px;
-    padding: 9px 16px;
+    padding: 8px 16px;
     font-size: 13px;
 }
 QPushButton#PrimaryBtn:hover {
-    background-color: #1d4ed8;
+    background-color: #0860ca;
 }
 QPushButton#PrimaryBtn:disabled {
-    background-color: #93c5fd;
-    border-color: #bfdbfe;
+    background-color: #80b5ea;
+    border-color: #80b5ea;
 }
 QPushButton#SecondaryBtn {
-    background-color: #f8fafc;
-    border: 1px solid #cbd5e1;
-    color: #475569;
+    background-color: #f6f8fa;
+    border: 1px solid #d0d7de;
+    color: #57606a;
     font-weight: 500;
-    padding: 5px 8px;
+    padding: 4px 8px;
     font-size: 11px;
 }
 QPushButton#ColorChip {
-    border: 2px solid #e2e8f0;
+    border: 1.5px solid #d0d7de;
     border-radius: 6px;
     padding: 4px 6px;
     font-weight: 600;
@@ -143,31 +144,31 @@ QPushButton#ColorChip {
     min-height: 20px;
 }
 QPushButton#ColorChip:checked {
-    border: 2px solid #2563eb;
-    background-color: #eff6ff;
+    border: 2px solid #0969da;
+    background-color: #ddf4ff;
 }
 QFrame#DropBox {
-    background-color: #f8fafc;
-    border: 1.5px dashed #cbd5e1;
-    border-radius: 8px;
+    background-color: #f6f8fa;
+    border: 1.5px dashed #d0d7de;
+    border-radius: 6px;
 }
 QFrame#DropBox:hover, QFrame#DropBox[dragOver="true"] {
-    background-color: #eff6ff;
-    border-color: #3b82f6;
+    background-color: #ddf4ff;
+    border-color: #0969da;
 }
 QProgressBar {
-    background-color: #e2e8f0;
+    background-color: #eaeef2;
     border: none;
-    border-radius: 3px;
+    border-radius: 2px;
     height: 4px;
 }
 QProgressBar::chunk {
-    background-color: #2563eb;
-    border-radius: 3px;
+    background-color: #0969da;
+    border-radius: 2px;
 }
 QCheckBox {
     font-size: 11px;
-    color: #334155;
+    color: #24292f;
     spacing: 5px;
 }
 QScrollArea {
@@ -224,7 +225,7 @@ class CropWidget(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 
-        painter.fillRect(self.rect(), QColor("#1e293b"))
+        painter.fillRect(self.rect(), QColor("#0f172a"))
 
         vw, vh = self.width(), self.height()
         scaled_pix = self.pixmap.scaled(vw, vh, Qt.KeepAspectRatio, Qt.SmoothTransformation)
@@ -244,7 +245,7 @@ class CropWidget(QWidget):
         painter.fillRect(QRect(0, cy, cx, ch), mask_color)
         painter.fillRect(QRect(cx + cw, cy, vw - (cx + cw), ch), mask_color)
 
-        pen = QPen(QColor("#3b82f6"), 2)
+        pen = QPen(QColor("#0969da"), 2)
         painter.setPen(pen)
         painter.drawRect(self.crop_rect)
 
@@ -256,7 +257,7 @@ class CropWidget(QWidget):
         painter.drawLine(cx, cy + 2 * ch // 3, cx + cw, cy + 2 * ch // 3)
 
         painter.setBrush(QColor("#ffffff"))
-        painter.setPen(QPen(QColor("#2563eb"), 2))
+        painter.setPen(QPen(QColor("#0969da"), 2))
         handle_size = 8
         painter.drawRect(cx - handle_size//2, cy - handle_size//2, handle_size, handle_size)
         painter.drawRect(cx + cw - handle_size//2, cy - handle_size//2, handle_size, handle_size)
@@ -311,7 +312,7 @@ class CropWidget(QWidget):
 class CropDialog(QDialog):
     def __init__(self, pil_image, aspect_ratio=25.0/35.0, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("✂️ 手动选区与精准人像裁剪 (支持合影多人物框选)")
+        self.setWindowTitle("✂️ 手动选区与精准人像裁剪")
         self.resize(780, 600)
         self.cropped_image = None
 
@@ -399,7 +400,6 @@ class RenderWorker(QThread):
             bg_rgb = self.color_dict["rgb"]
             need_matting = bg_rgb is not None
 
-            # 优先使用抠图缓存
             if need_matting and self.cached_rgba is not None:
                 id_photo = core.create_standard_id_photo(
                     self.cached_rgba, self.size_dict["w_px"], self.size_dict["h_px"], bg_rgb
@@ -416,9 +416,9 @@ class RenderWorker(QThread):
                 self.done.emit(id_photo, info, True, id_photo)
                 return
 
-            # 2: 照相馆经典金牌混排
+            # 2: 照相馆经典规整混排
             if self.mode_idx == 2:
-                mix_type = self.extra_params.get("mix_type", "6in_4_6")
+                mix_type = self.extra_params.get("mix_type", "5in_2_4")
                 if self.cached_rgba is not None:
                     id_1in = core.create_standard_id_photo(self.cached_rgba, core.mm_to_px(25), core.mm_to_px(35), bg_rgb)
                     id_2in = core.create_standard_id_photo(self.cached_rgba, core.mm_to_px(35), core.mm_to_px(49), bg_rgb)
@@ -434,9 +434,9 @@ class RenderWorker(QThread):
             # 3: 自由多尺寸自定义混排
             if self.mode_idx == 3:
                 counts = self.extra_params.get("counts", {})
-                paper = self.extra_params.get("paper", core.load_papers()[1])
+                paper = self.extra_params.get("paper", core.load_papers()[0]) # 默认5寸
                 images_dict = {}
-                for k, w_mm, h_mm in [("1in", 25, 35), ("2in", 35, 49), ("s_1in", 22, 32), ("l_2in", 35, 53)]:
+                for k, w_mm, h_mm in [("2in", 35, 49), ("1in", 25, 35), ("s_1in", 22, 32), ("l_2in", 35, 53)]:
                     if self.cached_rgba is not None:
                         images_dict[k] = core.create_standard_id_photo(self.cached_rgba, core.mm_to_px(w_mm), core.mm_to_px(h_mm), bg_rgb)
                     else:
@@ -452,7 +452,7 @@ class RenderWorker(QThread):
                 p = self.extra_params["paper"]
                 lay = core.compute_layout(p["w_mm"], p["h_mm"], self.size_dict["w_mm"], self.size_dict["h_mm"])
             else:
-                p = self.extra_params.get("paper", core.load_papers()[1])
+                p = self.extra_params.get("paper", core.load_papers()[0])
                 lay = core.compute_layout_grid(self.size_dict["w_mm"], self.size_dict["h_mm"],
                                                self.extra_params["rows"], self.extra_params["cols"],
                                                paper_w_mm=p["w_mm"], paper_h_mm=p["h_mm"])
@@ -724,17 +724,17 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Horizontal)
         splitter.setHandleWidth(4)
 
-        # ----------------- 左侧控制面板 (固定底部操作栏，禁绝横向滚动) -----------------
+        # ----------------- 左侧控制面板 (原生 macOS 风格，无横向滚动条) -----------------
         left_container = QWidget()
-        left_container.setMinimumWidth(400)
-        left_container.setMaximumWidth(480)
+        left_container.setMinimumWidth(390)
+        left_container.setMaximumWidth(460)
         left_box = QVBoxLayout(left_container)
         left_box.setContentsMargins(0, 0, 0, 0)
         left_box.setSpacing(8)
 
         left_scroll = QScrollArea()
         left_scroll.setWidgetResizable(True)
-        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff) # 禁绝横向滚动条
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
@@ -751,7 +751,7 @@ class MainWindow(QMainWindow):
         hl.addLayout(t_box)
         hl.addStretch()
         btn_batch_top = QPushButton("📂 批量处理"); btn_batch_top.setObjectName("SecondaryBtn")
-        btn_batch_top.setFixedWidth(85)
+        btn_batch_top.setFixedWidth(80)
         btn_batch_top.clicked.connect(self.open_batch_dialog)
         hl.addWidget(btn_batch_top)
         left_layout.addWidget(head_card)
@@ -765,7 +765,7 @@ class MainWindow(QMainWindow):
         dl = QHBoxLayout(self.dropbox); dl.setContentsMargins(8, 8, 8, 8); dl.setSpacing(10)
         self.lbl_thumb = QLabel()
         self.lbl_thumb.setFixedSize(48, 48)
-        self.lbl_thumb.setStyleSheet("background-color: #e2e8f0; border-radius: 4px;")
+        self.lbl_thumb.setStyleSheet("background-color: #eaeef2; border-radius: 4px;")
         self.lbl_thumb.setAlignment(Qt.AlignCenter)
         self.lbl_thumb.setText("📷")
         dl.addWidget(self.lbl_thumb)
@@ -783,7 +783,6 @@ class MainWindow(QMainWindow):
         dl.addWidget(b_sel)
         cl.addWidget(self.dropbox)
 
-        # 快捷裁剪与重置工具栏
         tool_row = QHBoxLayout()
         self.btn_crop = QPushButton("✂️ 手动选区/裁剪人像…")
         self.btn_crop.setObjectName("SecondaryBtn")
@@ -836,9 +835,8 @@ class MainWindow(QMainWindow):
             if c["hex"] and c["hex"] != "#ffffff" and c["hex"] != "#e2e8f0":
                 btn.setStyleSheet(f"background-color: {c['hex']}; color: #ffffff;")
             elif c["hex"] == "#ffffff":
-                btn.setStyleSheet("background-color: #ffffff; color: #1e293b; border: 1px solid #cbd5e1;")
+                btn.setStyleSheet("background-color: #ffffff; color: #1f2328; border: 1.5px solid #d0d7de;")
             self.color_btn_group.addButton(btn, idx)
-            # 2行4列
             color_grid.addWidget(btn, idx // 4, idx % 4)
             if idx == 0:
                 btn.setChecked(True)
@@ -860,13 +858,13 @@ class MainWindow(QMainWindow):
         self.mode_combo = QComboBox()
         self.mode_combo.addItem("🖼 仅单张证件照 (默认)")
         self.mode_combo.addItem("📄 照相馆标准相纸排版")
-        self.mode_combo.addItem("🔀 照相馆经典金牌混排")
+        self.mode_combo.addItem("🔀 照相馆标准规整混排")
         self.mode_combo.addItem("🧩 自由多尺寸自定义混排")
         self.mode_combo.addItem("📐 自由自定义网格排版")
         self.mode_combo.currentIndexChanged.connect(self.on_mode_changed)
         pl.addWidget(self.mode_combo)
 
-        # 相纸选择容器 (模式 1、3、4 使用)
+        # 相纸选择容器
         self.paper_container = QWidget()
         paper_l = QVBoxLayout(self.paper_container); paper_l.setContentsMargins(0, 0, 0, 0); paper_l.setSpacing(4)
         paper_l.addWidget(QLabel("选择冲印相纸 (5寸/6寸置顶):"))
@@ -881,18 +879,17 @@ class MainWindow(QMainWindow):
         # 经典混排类型容器 (模式 2)
         self.mix_container = QWidget()
         mix_l = QVBoxLayout(self.mix_container); mix_l.setContentsMargins(0, 0, 0, 0); mix_l.setSpacing(4)
-        mix_l.addWidget(QLabel("经典混排方案:"))
+        mix_l.addWidget(QLabel("照相馆标准混排方案:"))
         self.mix_combo = QComboBox()
-        self.mix_combo.addItem("6寸金牌混排 · 4张二寸 + 6张一寸 (最畅销)", "6in_4_6")
-        self.mix_combo.addItem("5寸黄金混排 · 2张二寸 + 4张一寸 (对称版)", "5in_2_4")
-        self.mix_combo.addItem("6寸实用混排 · 2张二寸 + 8张一寸 (多一寸版)", "6in_2_8")
-        self.mix_combo.addItem("6寸舒适混排 · 4张二寸 + 4张一寸 (留白版)", "6in_4_4")
+        self.mix_combo.addItem("5寸标准混排 · 上2张二寸 + 下4张一寸 (整齐对齐)", "5in_2_4")
+        self.mix_combo.addItem("6寸标准混排 · 上4张二寸 + 下4张一寸 (经典多规格)", "6in_4_4")
+        self.mix_combo.addItem("6寸实用混排 · 上2张二寸 + 下8张一寸 (多一寸版)", "6in_2_8")
         self.mix_combo.currentIndexChanged.connect(self.schedule_render)
         mix_l.addWidget(self.mix_combo)
         pl.addWidget(self.mix_container)
         self.mix_container.setVisible(False)
 
-        # 自由自定义混排容器 (模式 3 - 垂直清晰表单布局，绝不挤压截断)
+        # 自由自定义混排容器 (模式 3)
         self.custom_mix_container = QWidget()
         cml = QVBoxLayout(self.custom_mix_container); cml.setContentsMargins(0, 0, 0, 0); cml.setSpacing(6)
         cml.addWidget(QLabel("设定各尺寸冲印张数:"))
@@ -901,15 +898,15 @@ class MainWindow(QMainWindow):
         form_counts.setContentsMargins(0, 0, 0, 0)
         form_counts.setSpacing(6)
 
-        self.spin_1in = QSpinBox(); self.spin_1in.setRange(0, 24); self.spin_1in.setValue(4)
-        self.spin_1in.setFixedWidth(80)
-        self.spin_1in.valueChanged.connect(self.schedule_render)
-        form_counts.addRow("一寸 (25×35mm):", self.spin_1in)
-
         self.spin_2in = QSpinBox(); self.spin_2in.setRange(0, 12); self.spin_2in.setValue(2)
         self.spin_2in.setFixedWidth(80)
         self.spin_2in.valueChanged.connect(self.schedule_render)
         form_counts.addRow("二寸 (35×49mm):", self.spin_2in)
+
+        self.spin_1in = QSpinBox(); self.spin_1in.setRange(0, 24); self.spin_1in.setValue(4)
+        self.spin_1in.setFixedWidth(80)
+        self.spin_1in.valueChanged.connect(self.schedule_render)
+        form_counts.addRow("一寸 (25×35mm):", self.spin_1in)
 
         self.spin_s1in = QSpinBox(); self.spin_s1in.setRange(0, 24); self.spin_s1in.setValue(0)
         self.spin_s1in.setFixedWidth(80)
@@ -966,7 +963,7 @@ class MainWindow(QMainWindow):
         left_scroll.setWidget(left_widget)
         left_box.addWidget(left_scroll, 1)
 
-        # 4. 固定底部操作与导出卡片 (绝不随上方面板变动而闪烁)
+        # 4. 固定底部操作与导出卡片
         bottom_card = QFrame(); bottom_card.setObjectName("Card")
         bl = QVBoxLayout(bottom_card); bl.setContentsMargins(12, 10, 12, 10); bl.setSpacing(8)
 
@@ -1016,7 +1013,7 @@ class MainWindow(QMainWindow):
 
         self.preview_canvas = QLabel()
         self.preview_canvas.setStyleSheet(
-            "background-color: #e2e8f0; border: 1px solid #cbd5e1; border-radius: 8px;"
+            "background-color: #eaeef2; border: 1px solid #d0d7de; border-radius: 8px;"
         )
         self.preview_canvas.setAlignment(Qt.AlignCenter)
         self.preview_canvas.setMinimumSize(400, 400)
@@ -1204,17 +1201,17 @@ class MainWindow(QMainWindow):
         extra_params = {}
 
         if mode_idx in (1, 4):
-            extra_params["paper"] = self.paper_combo.currentData() or core.load_papers()[1]
+            extra_params["paper"] = self.paper_combo.currentData() or core.load_papers()[0]
             if mode_idx == 4:
                 extra_params["rows"] = self.spin_rows.value()
                 extra_params["cols"] = self.spin_cols.value()
         elif mode_idx == 2:
-            extra_params["mix_type"] = self.mix_combo.currentData() or "6in_4_6"
+            extra_params["mix_type"] = self.mix_combo.currentData() or "5in_2_4"
         elif mode_idx == 3:
-            extra_params["paper"] = self.paper_combo.currentData() or core.load_papers()[1]
+            extra_params["paper"] = self.paper_combo.currentData() or core.load_papers()[0]
             extra_params["counts"] = {
-                "1in": self.spin_1in.value(),
                 "2in": self.spin_2in.value(),
+                "1in": self.spin_1in.value(),
                 "s_1in": self.spin_s1in.value(),
                 "l_2in": self.spin_l2in.value(),
             }
@@ -1350,14 +1347,14 @@ def run():
     app.setStyle("Fusion")
 
     palette = QPalette()
-    palette.setColor(QPalette.Window, QColor("#f1f5f9"))
-    palette.setColor(QPalette.WindowText, QColor("#1e293b"))
+    palette.setColor(QPalette.Window, QColor("#f6f8fa"))
+    palette.setColor(QPalette.WindowText, QColor("#1f2328"))
     palette.setColor(QPalette.Base, QColor("#ffffff"))
-    palette.setColor(QPalette.AlternateBase, QColor("#f8fafc"))
-    palette.setColor(QPalette.Text, QColor("#1e293b"))
+    palette.setColor(QPalette.AlternateBase, QColor("#f6f8fa"))
+    palette.setColor(QPalette.Text, QColor("#1f2328"))
     palette.setColor(QPalette.Button, QColor("#ffffff"))
-    palette.setColor(QPalette.ButtonText, QColor("#1e293b"))
-    palette.setColor(QPalette.Highlight, QColor("#2563eb"))
+    palette.setColor(QPalette.ButtonText, QColor("#1f2328"))
+    palette.setColor(QPalette.Highlight, QColor("#0969da"))
     palette.setColor(QPalette.HighlightedText, QColor("#ffffff"))
     app.setPalette(palette)
     app.setStyleSheet(QSS)
