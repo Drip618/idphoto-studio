@@ -2,12 +2,12 @@
 """
 ui/main_window.py — 证件照工作室 macOS / Windows 工业级原生桌面界面
 ===================================================================
-- 苹果 Studio 级美学设计，支持任意缩放，QSettings 本地持久化记忆窗口尺寸与目录
+- 苹果 Studio 级美学设计，QSettings 本地持久化记忆窗口尺寸与目录
 - 默认进入单张证件照模式，导入照片与换底色绝不自作主张排版
 - 相纸排序 5寸/6寸 置顶，从小到大规范排列
 - 照相馆黄金对称混排 + 自由多尺寸自定义混排装箱引擎（带相纸容量超限检测）
-- 自定义网格排版绑定真实相纸尺寸与越界检测
-- 浅灰虚线裁切框与尺寸标线
+- 预览区浅灰精致边框，白底照片绝不融为一体
+- 底部操作栏固定无闪烁，支持用户自主选择导出格式 (PNG / JPG / 两种都要)
 """
 
 import os
@@ -262,7 +262,7 @@ class RenderWorker(QThread):
             # 3: 自由多尺寸自定义混排
             if self.mode_idx == 3:
                 counts = self.extra_params.get("counts", {})
-                paper = self.extra_params.get("paper", core.load_papers()[1]) # 默认6寸
+                paper = self.extra_params.get("paper", core.load_papers()[1])
                 images_dict = {}
                 for k, w_mm, h_mm in [("1in", 25, 35), ("2in", 35, 49), ("s_1in", 22, 32), ("l_2in", 35, 53)]:
                     if self.cached_rgba is not None:
@@ -310,7 +310,7 @@ class BatchWorker(QThread):
     finished = Signal(int, list)
     error = Signal(str)
 
-    def __init__(self, file_paths, size_dict, color_dict, export_single, export_sheet, paper_dict, out_dir):
+    def __init__(self, file_paths, size_dict, color_dict, export_single, export_sheet, paper_dict, export_fmt, out_dir):
         super().__init__()
         self.file_paths = file_paths
         self.size_dict = size_dict
@@ -318,6 +318,7 @@ class BatchWorker(QThread):
         self.export_single = export_single
         self.export_sheet = export_sheet
         self.paper_dict = paper_dict
+        self.export_fmt = export_fmt # "both", "png", "jpg"
         self.out_dir = out_dir
 
     def run(self):
@@ -342,9 +343,12 @@ class BatchWorker(QThread):
                     if self.export_single:
                         p_png = os.path.join(self.out_dir, f"{base}_{self.size_dict['name']}_单张.png")
                         p_jpg = os.path.join(self.out_dir, f"{base}_{self.size_dict['name']}_单张.jpg")
-                        id_photo.save(p_png, "PNG")
-                        id_photo.save(p_jpg, "JPEG", quality=95)
-                        saved.append(p_png)
+                        if self.export_fmt in ("both", "png"):
+                            id_photo.save(p_png, "PNG")
+                            saved.append(p_png)
+                        if self.export_fmt in ("both", "jpg"):
+                            id_photo.save(p_jpg, "JPEG", quality=95)
+                            saved.append(p_jpg)
 
                     if self.export_sheet and self.paper_dict:
                         lay = core.compute_layout(
@@ -359,9 +363,12 @@ class BatchWorker(QThread):
                         tag = self.paper_dict["name"].split(" ")[0]
                         p_sheet_png = os.path.join(self.out_dir, f"{base}_{tag}_{self.size_dict['name']}_排版.png")
                         p_sheet_jpg = os.path.join(self.out_dir, f"{base}_{tag}_{self.size_dict['name']}_排版.jpg")
-                        sheet.save(p_sheet_png, "PNG")
-                        sheet.save(p_sheet_jpg, "JPEG", quality=95)
-                        saved.append(p_sheet_png)
+                        if self.export_fmt in ("both", "png"):
+                            sheet.save(p_sheet_png, "PNG")
+                            saved.append(p_sheet_png)
+                        if self.export_fmt in ("both", "jpg"):
+                            sheet.save(p_sheet_jpg, "JPEG", quality=95)
+                            saved.append(p_sheet_jpg)
 
                 except Exception:
                     continue
@@ -375,7 +382,7 @@ class BatchDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("📂 批量证件照冲印处理")
-        self.resize(560, 480)
+        self.resize(560, 500)
         self.file_paths = []
         self.worker = None
 
@@ -416,9 +423,15 @@ class BatchDialog(QDialog):
             self.batch_paper.addItem(p["name"], p)
         ol.addRow("冲印相纸:", self.batch_paper)
 
-        self.chk_single = QCheckBox("导出单张证件照 (PNG + JPG)"); self.chk_single.setChecked(True)
-        self.chk_sheet = QCheckBox("导出冲印排版图 (PNG + JPG)"); self.chk_sheet.setChecked(True)
-        ol.addRow("导出选项:", self.chk_single)
+        self.batch_fmt = QComboBox()
+        self.batch_fmt.addItem("PNG + JPG (两种都要)", "both")
+        self.batch_fmt.addItem("仅导出 PNG (高清无损)", "png")
+        self.batch_fmt.addItem("仅导出 JPG (冲印格式)", "jpg")
+        ol.addRow("导出格式:", self.batch_fmt)
+
+        self.chk_single = QCheckBox("导出单张证件照"); self.chk_single.setChecked(True)
+        self.chk_sheet = QCheckBox("导出冲印排版图"); self.chk_sheet.setChecked(True)
+        ol.addRow("导出内容:", self.chk_single)
         ol.addRow("", self.chk_sheet)
         layout.addWidget(opt_box)
 
@@ -470,6 +483,7 @@ class BatchDialog(QDialog):
         size_dict = self.batch_size.currentData()
         color_dict = self.batch_color.currentData()
         paper_dict = self.batch_paper.currentData()
+        export_fmt = self.batch_fmt.currentData()
 
         self.btn_run.setEnabled(False)
         self.pbar.setVisible(True)
@@ -479,7 +493,7 @@ class BatchDialog(QDialog):
         self.worker = BatchWorker(
             self.file_paths, size_dict, color_dict,
             self.chk_single.isChecked(), self.chk_sheet.isChecked(),
-            paper_dict, out_dir
+            paper_dict, export_fmt, out_dir
         )
         self.worker.progress.connect(self.on_progress)
         self.worker.finished.connect(self.on_finished)
@@ -506,7 +520,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("证件照工作室 Studio")
-        self.setMinimumSize(960, 680)
+        self.setMinimumSize(980, 700)
         self.setAcceptDrops(True)
 
         self.settings = QSettings("IDPhotoStudio", "Settings")
@@ -536,12 +550,16 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Horizontal)
         splitter.setHandleWidth(4)
 
-        # ----------------- 左侧控制面板 -----------------
+        # ----------------- 左侧控制面板 (固定底部操作栏，0闪烁) -----------------
+        left_container = QWidget()
+        left_container.setMinimumWidth(390)
+        left_container.setMaximumWidth(460)
+        left_box = QVBoxLayout(left_container)
+        left_box.setContentsMargins(0, 0, 0, 0)
+        left_box.setSpacing(8)
+
         left_scroll = QScrollArea()
         left_scroll.setWidgetResizable(True)
-        left_scroll.setMinimumWidth(380)
-        left_scroll.setMaximumWidth(460)
-
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
         left_layout.setContentsMargins(4, 4, 4, 4)
@@ -628,7 +646,7 @@ class MainWindow(QMainWindow):
                 btn.setStyleSheet("background-color: #ffffff; color: #1e293b; border: 1px solid #cbd5e1;")
             self.color_btn_group.addButton(btn, idx)
             color_grid.addWidget(btn)
-            if idx == 0: # 默认蓝底
+            if idx == 0:
                 btn.setChecked(True)
 
         btn_custom_c = QPushButton("🎨 自定义")
@@ -664,7 +682,7 @@ class MainWindow(QMainWindow):
         self.paper_combo.currentIndexChanged.connect(self.schedule_render)
         paper_l.addWidget(self.paper_combo)
         pl.addWidget(self.paper_container)
-        self.paper_container.setVisible(False) # 默认单张隐藏
+        self.paper_container.setVisible(False)
 
         # 经典混排类型容器 (模式 2)
         self.mix_container = QWidget()
@@ -733,7 +751,7 @@ class MainWindow(QMainWindow):
         pl.addWidget(self.grid_container)
         self.grid_container.setVisible(False)
 
-        # 辅助选项框 (排版模式下显示)
+        # 辅助选项框
         self.opt_aux_box = QWidget()
         al = QHBoxLayout(self.opt_aux_box); al.setContentsMargins(0, 4, 0, 0); al.setSpacing(10)
         self.chk_cut_lines = QCheckBox("打印浅灰裁切线")
@@ -744,15 +762,30 @@ class MainWindow(QMainWindow):
         self.chk_add_text.toggled.connect(self.schedule_render)
         al.addWidget(self.chk_cut_lines); al.addWidget(self.chk_add_text)
         pl.addWidget(self.opt_aux_box)
-        self.opt_aux_box.setVisible(False) # 默认单张模式隐藏
+        self.opt_aux_box.setVisible(False)
 
         left_layout.addWidget(card_print)
+        left_layout.addStretch()
+        left_scroll.setWidget(left_widget)
+        left_box.addWidget(left_scroll, 1)
 
-        # 4. 导出按钮与操作区
-        self.btn_export = QPushButton("💾 导出排版与照片 (PNG + JPG)")
+        # 4. 固定底部操作与导出卡片 (绝不随上方面板变动而闪烁)
+        bottom_card = QFrame(); bottom_card.setObjectName("Card")
+        bl = QVBoxLayout(bottom_card); bl.setContentsMargins(12, 10, 12, 10); bl.setSpacing(8)
+
+        fmt_row = QHBoxLayout()
+        fmt_row.addWidget(QLabel("导出格式:"))
+        self.combo_export_fmt = QComboBox()
+        self.combo_export_fmt.addItem("PNG + JPG (两种都要 · 推荐)", "both")
+        self.combo_export_fmt.addItem("仅导出 PNG (高清无损)", "png")
+        self.combo_export_fmt.addItem("仅导出 JPG (冲印格式)", "jpg")
+        fmt_row.addWidget(self.combo_export_fmt, 1)
+        bl.addLayout(fmt_row)
+
+        self.btn_export = QPushButton("💾 导出高清照片/排版")
         self.btn_export.setObjectName("PrimaryBtn")
         self.btn_export.clicked.connect(self.export_result)
-        left_layout.addWidget(self.btn_export)
+        bl.addWidget(self.btn_export)
 
         b_row = QHBoxLayout(); b_row.setSpacing(6)
         b_preset = QPushButton("⚙️ 预设管理…"); b_preset.setObjectName("SecondaryBtn")
@@ -762,15 +795,14 @@ class MainWindow(QMainWindow):
         b_refresh = QPushButton("🔄 刷新"); b_refresh.setObjectName("SecondaryBtn")
         b_refresh.clicked.connect(self.schedule_render)
         b_row.addWidget(b_preset); b_row.addWidget(b_batch); b_row.addWidget(b_refresh)
-        left_layout.addLayout(b_row)
+        bl.addLayout(b_row)
 
         self.status = QLabel("✓ 就绪，请导入照片")
         self.status.setObjectName("SubTitle")
-        left_layout.addWidget(self.status)
-        left_layout.addStretch()
+        bl.addWidget(self.status)
 
-        left_scroll.setWidget(left_widget)
-        splitter.addWidget(left_scroll)
+        left_box.addWidget(bottom_card, 0)
+        splitter.addWidget(left_container)
 
         # ----------------- 右侧大预览区 -----------------
         right_panel = QWidget()
@@ -787,7 +819,7 @@ class MainWindow(QMainWindow):
 
         self.preview_canvas = QLabel()
         self.preview_canvas.setStyleSheet(
-            "background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px;"
+            "background-color: #e2e8f0; border: 1px solid #cbd5e1; border-radius: 8px;"
         )
         self.preview_canvas.setAlignment(Qt.AlignCenter)
         self.preview_canvas.setMinimumSize(400, 400)
@@ -839,11 +871,6 @@ class MainWindow(QMainWindow):
             self.schedule_render()
 
     def on_mode_changed(self, idx):
-        # 0: 仅单张证件照 (默认)
-        # 1: 照相馆标准相纸排版
-        # 2: 照相馆经典金牌混排
-        # 3: 自由多尺寸自定义混排
-        # 4: 自由自定义网格排版
         self.paper_container.setVisible(idx in (1, 3, 4))
         self.mix_container.setVisible(idx == 2)
         self.custom_mix_container.setVisible(idx == 3)
@@ -892,7 +919,6 @@ class MainWindow(QMainWindow):
             from PIL import Image
             img = Image.open(p)
             self.lbl_filesize.setText(f"原图: {img.size[0]} × {img.size[1]} px")
-            # 缩略图
             thumb = img.copy()
             thumb.thumbnail((48, 48), Image.LANCZOS)
             qimg = pil_to_qimage(thumb)
@@ -900,7 +926,6 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        # 启动后台发丝抠图 (缓存)
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)
         self.status.setText("正在进行智能发丝抠图…")
@@ -913,7 +938,6 @@ class MainWindow(QMainWindow):
         self.mworker.failed.connect(self.on_matting_failed)
         self.mworker.start()
 
-        # 立即先渲染一次单张预览
         self._do_render()
 
     def on_matting_done(self, rgba):
@@ -999,11 +1023,25 @@ class MainWindow(QMainWindow):
         qimg = pil_to_qimage(self.current_preview_image)
         pixmap = QPixmap.fromImage(qimg)
 
-        # 视窗等比自适应缩放 (留出四周各 15px 边距)
-        cw = max(100, self.preview_canvas.width() - 30)
-        ch = max(100, self.preview_canvas.height() - 30)
+        # 视窗等比自适应缩放 (四周留出 24px)
+        cw = max(100, self.preview_canvas.width() - 24)
+        ch = max(100, self.preview_canvas.height() - 24)
         scaled_pix = pixmap.scaled(cw, ch, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        self.preview_canvas.setPixmap(scaled_pix)
+
+        # 为白底/单张照片添加一层精致外相框与边线，绝不与白色底板融为一体
+        bordered_pixmap = QPixmap(scaled_pix.size() + QSize(4, 4))
+        bordered_pixmap.fill(Qt.transparent)
+
+        painter = QPainter(bordered_pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        # 绘制浅灰相框
+        painter.setPen(QPen(QColor("#94a3b8"), 1))
+        painter.setBrush(QColor("#ffffff"))
+        painter.drawRect(0, 0, scaled_pix.width() + 1, scaled_pix.height() + 1)
+        painter.drawPixmap(1, 1, scaled_pix)
+        painter.end()
+
+        self.preview_canvas.setPixmap(bordered_pixmap)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -1022,34 +1060,43 @@ class MainWindow(QMainWindow):
         self.settings.setValue("last_export_dir", out_dir)
         base_name = os.path.splitext(os.path.basename(self.input_path))[0]
         size_name = self.size_combo.currentData()["name"].split(" ")[0]
+        export_fmt = self.combo_export_fmt.currentData() # "both", "png", "jpg"
 
         saved_files = []
         try:
             if self.is_single_preview:
                 p_png = os.path.join(out_dir, f"{base_name}_{size_name}_单张.png")
                 p_jpg = os.path.join(out_dir, f"{base_name}_{size_name}_单张.jpg")
-                self.current_preview_image.save(p_png, "PNG")
-                self.current_preview_image.save(p_jpg, "JPEG", quality=95)
-                saved_files.extend([p_png, p_jpg])
+                if export_fmt in ("both", "png"):
+                    self.current_preview_image.save(p_png, "PNG")
+                    saved_files.append(p_png)
+                if export_fmt in ("both", "jpg"):
+                    self.current_preview_image.save(p_jpg, "JPEG", quality=95)
+                    saved_files.append(p_jpg)
             else:
-                # 导出排版图 + 单张证件照
                 mode_name = self.mode_combo.currentText().split(" ")[1]
                 p_sheet_png = os.path.join(out_dir, f"{base_name}_{size_name}_{mode_name}_排版.png")
                 p_sheet_jpg = os.path.join(out_dir, f"{base_name}_{size_name}_{mode_name}_排版.jpg")
-                self.current_preview_image.save(p_sheet_png, "PNG")
-                self.current_preview_image.save(p_sheet_jpg, "JPEG", quality=95)
-                saved_files.extend([p_sheet_png, p_sheet_jpg])
+                if export_fmt in ("both", "png"):
+                    self.current_preview_image.save(p_sheet_png, "PNG")
+                    saved_files.append(p_sheet_png)
+                if export_fmt in ("both", "jpg"):
+                    self.current_preview_image.save(p_sheet_jpg, "JPEG", quality=95)
+                    saved_files.append(p_sheet_jpg)
 
                 if self.current_single_id:
                     p_single_png = os.path.join(out_dir, f"{base_name}_{size_name}_单张.png")
                     p_single_jpg = os.path.join(out_dir, f"{base_name}_{size_name}_单张.jpg")
-                    self.current_single_id.save(p_single_png, "PNG")
-                    self.current_single_id.save(p_single_jpg, "JPEG", quality=95)
-                    saved_files.extend([p_single_png, p_single_jpg])
+                    if export_fmt in ("both", "png"):
+                        self.current_single_id.save(p_single_png, "PNG")
+                        saved_files.append(p_single_png)
+                    if export_fmt in ("both", "jpg"):
+                        self.current_single_id.save(p_single_jpg, "JPEG", quality=95)
+                        saved_files.append(p_single_jpg)
 
             QMessageBox.information(
                 self, "导出成功",
-                f"已成功导出高清图片到：\n{out_dir}\n\n共生成 {len(saved_files)} 份文件 (PNG无损 + JPG冲印版)。"
+                f"已成功导出照片到：\n{out_dir}\n\n共生成 {len(saved_files)} 份文件。"
             )
         except Exception as e:
             QMessageBox.critical(self, "导出失败", f"保存图片时出错：{e}")
@@ -1075,7 +1122,6 @@ def run():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
 
-    # 强制浅色调色板，防止系统深色主题污染
     palette = QPalette()
     palette.setColor(QPalette.Window, QColor("#f1f5f9"))
     palette.setColor(QPalette.WindowText, QColor("#1e293b"))
