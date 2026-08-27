@@ -2,11 +2,10 @@
 """
 idphoto_core.py — 证件照换底色 + 排版打印 核心引擎（数据驱动，无 GUI 依赖）
 =========================================================================
-- 智能双模融合抠图：RMBG-1.4（发丝细节无暗斑） + Hivision MODNet（暗部衣服与肩膀完整保护）
+- 智能抠图：SOTA 级 RMBG-1.4 高清发丝抠图模型（1024x1024 亚像素精度，发丝边缘极致纯净）
 - 照相馆标准证件照构图：头顶留白 8%，人像底部贴死画幅边缘（绝无悬空底边）
-- 行业规范冲印排版：智能相纸朝向与安全边距计算（6寸8张二寸/16张一寸，5寸9张一寸/4张二寸）
+- 行业规范冲印排版：默认舒适留白，带标准裁切虚线框
 - 常用混排冲印：6寸 (4张2寸+4张1寸) / 5寸 (2张2寸+4张1寸)，全正立直放
-- 批量处理管线：支持多图/整文件夹批量智能抠图换底与排版导出
 """
 
 import os
@@ -72,7 +71,7 @@ BUILTIN_COLORS = [
     ("white", "白底", "#FFFFFF"),
     ("navy", "深蓝底", "#1E50A2"),
     ("gray", "灰底", "#D1D5DB"),
-    ("none", "不换背景", None),
+    ("none", "原图", None),
 ]
 
 BUILTIN_PAPERS = [
@@ -192,82 +191,62 @@ class PresetManager:
         self._save()
 
 
-# ============================================================ 智能抠图管线 (ONNX 双模型自适应融合)
+# ============================================================ 智能抠图管线 (纯正 SOTA RMBG-1.4 高清模型)
 class Matting:
     def __init__(self):
-        self._rmbg_sess = None
-        self._modnet_sess = None
+        self._session = None
+        self._model_path = self.locate_model_path()
 
     @staticmethod
-    def locate_model_path(model_name):
-        cands = []
-        if getattr(sys, "frozen", False):
-            base = getattr(sys, "_MEIPASS", None)
-            if base:
-                cands.append(os.path.join(base, "weights", model_name))
-        cands.append(os.path.join(PROJECT_ROOT, "weights", model_name))
-        cands.append(os.path.join(USER_WEIGHTS_DIR, model_name))
-        for p in cands:
-            if os.path.exists(p):
-                return p
+    def locate_model_path():
+        for name in MODEL_NAMES:
+            cands = []
+            if getattr(sys, "frozen", False):
+                base = getattr(sys, "_MEIPASS", None)
+                if base:
+                    cands.append(os.path.join(base, "weights", name))
+            cands.append(os.path.join(PROJECT_ROOT, "weights", name))
+            cands.append(os.path.join(USER_WEIGHTS_DIR, name))
+            for p in cands:
+                if os.path.exists(p):
+                    return p
         return None
 
     def available(self):
-        # 只要有一个模型存在即可用
-        for name in MODEL_NAMES:
-            if self.locate_model_path(name) is not None:
-                return True
-        return False
+        return self._model_path is not None and os.path.exists(self._model_path)
 
-    def _get_rmbg_session(self):
-        if self._rmbg_sess is not None:
-            return self._rmbg_sess
-        p = self.locate_model_path("rmbg_quantized.onnx")
-        if p and os.path.exists(p):
-            import onnxruntime as ort
-            self._rmbg_sess = ort.InferenceSession(p, providers=["CPUExecutionProvider"])
-        return self._rmbg_sess
-
-    def _get_modnet_session(self):
-        if self._modnet_sess is not None:
-            return self._modnet_sess
-        for name in ["hivision_modnet.onnx", "modnet_photographic_portrait_matting.onnx"]:
-            p = self.locate_model_path(name)
-            if p and os.path.exists(p):
-                import onnxruntime as ort
-                self._modnet_sess = ort.InferenceSession(p, providers=["CPUExecutionProvider"])
-                break
-        return self._modnet_sess
+    def _ensure_session(self):
+        if self._session is not None:
+            return self._session
+        if not self.available():
+            raise RuntimeError("未找到抠图模型，请选择「原图」仅排版。")
+        import onnxruntime as ort
+        self._session = ort.InferenceSession(self._model_path, providers=["CPUExecutionProvider"])
+        return self._session
 
     def remove(self, image):
+        sess = self._ensure_session()
+        inp = sess.get_inputs()[0]
         orig_w, orig_h = image.size
-        sess_r = self._get_rmbg_session()
-        sess_m = self._get_modnet_session()
 
-        if sess_r is None and sess_m is None:
-            raise RuntimeError("未找到抠图模型，请选择「不换背景」仅排版。")
+        is_rmbg = "rmbg" in os.path.basename(self._model_path).lower()
 
-        alpha_r = None
-        alpha_m = None
-
-        # 1. 运行 RMBG 模型（发丝与上部背景极致纯净）
-        if sess_r is not None:
+        if is_rmbg:
             target = 1024
             resized = image.resize((target, target), Image.BILINEAR).convert("RGB")
             arr = np.asarray(resized, dtype=np.float32) / 255.0
             arr = (arr - 0.5) / 1.0
             arr = arr.transpose(2, 0, 1)[None, ...]
-            out = sess_r.run(None, {sess_r.get_inputs()[0].name: arr})[0]
+
+            out = sess.run(None, {inp.name: arr})[0]
             alpha_raw = out[0, 0] if out.ndim == 4 else out[0]
             min_v, max_v = float(alpha_raw.min()), float(alpha_raw.max())
             if max_v > min_v:
                 alpha_norm = (alpha_raw - min_v) / (max_v - min_v)
             else:
                 alpha_norm = alpha_raw
-            alpha_r = np.array(Image.fromarray((alpha_norm * 255).astype(np.uint8), mode="L").resize((orig_w, orig_h), Image.LANCZOS), dtype=np.float32)
-
-        # 2. 运行 MODNet 模型（身体结构与暗部衣服完整保护）
-        if sess_m is not None:
+            alpha = Image.fromarray((alpha_norm * 255).astype(np.uint8), mode="L").resize((orig_w, orig_h), Image.LANCZOS)
+        else:
             target = 512
             scale = target / max(orig_w, orig_h)
             new_w = max(1, int(round(orig_w * scale)))
@@ -282,31 +261,16 @@ class Matting:
             std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
             arr = (arr / 255.0 - mean) / std
             arr = arr.transpose(2, 0, 1)[None, ...]
-            out = sess_m.run(None, {sess_m.get_inputs()[0].name: arr})[0]
+
+            out = sess.run(None, {inp.name: arr})[0]
             alpha_full = out[0, 0] if out.ndim == 4 else out[0]
             alpha_full = (np.clip(alpha_full, 0, 1) * 255).astype(np.uint8)
             alpha_crop = alpha_full[pad_top:pad_top + new_h, pad_left:pad_left + new_w]
-            alpha_m = np.array(Image.fromarray(alpha_crop, mode="L").resize((orig_w, orig_h), Image.LANCZOS), dtype=np.float32)
+            alpha = Image.fromarray(alpha_crop, mode="L").resize((orig_w, orig_h), Image.LANCZOS)
 
-        # 3. 双模型智能互补融合
-        if alpha_r is not None and alpha_m is not None:
-            h, w = alpha_r.shape
-            y_indices = np.arange(h)[:, None]
-            # 顶部 45% 区域 100% 采用 RMBG；底部 65% 以下取 max(RMBG, MODNet) 防止黑衣服被挖空
-            weight_r = np.clip(1.0 - (y_indices - 0.45 * h) / (0.20 * h), 0.0, 1.0)
-            weight_m = 1.0 - weight_r
-            fused_bottom = np.maximum(alpha_r, alpha_m)
-            final_alpha = (alpha_r * weight_r + fused_bottom * weight_m).astype(np.uint8)
-        elif alpha_r is not None:
-            final_alpha = alpha_r.astype(np.uint8)
-        else:
-            final_alpha = alpha_m.astype(np.uint8)
-
-        alpha_img = Image.fromarray(final_alpha, mode="L")
-        alpha_img = alpha_img.filter(ImageFilter.MaxFilter(3)).filter(ImageFilter.MinFilter(3))
-
+        alpha = alpha.filter(ImageFilter.MaxFilter(3)).filter(ImageFilter.MinFilter(3))
         rgba = image.convert("RGBA")
-        rgba.putalpha(alpha_img)
+        rgba.putalpha(alpha)
         return rgba
 
 
@@ -383,23 +347,23 @@ def prepare_id_photo(image, id_w_px, id_h_px, bg_rgb, matting=None):
     return _center_crop_fill(image.convert("RGB"), id_w_px, id_h_px)
 
 
-# ============================================================ 冲印标准排版引擎
+# ============================================================ 冲印标准排版引擎 (照相馆规范舒适版)
 def compute_layout(paper_w_mm, paper_h_mm, id_w_mm, id_h_mm):
     """
-    照相馆规范冲印排版参数：
-    - 6寸 (102x152mm): 二寸 8张 (4x2横版) / 一寸 16张 (4x4竖版)
-    - 5寸 (89x127mm):  一寸 9张 (3x3舒适版) / 二寸 4张 (2x2舒适版)
-    - 7寸 (127x178mm): 一寸 16张 (4x4) / 二寸 9张 (3x3)
+    照相馆冲印规范排版：
+    - 6寸 (102x152mm): 二寸 8张 (4x2横版) / 一寸 8张 (4x2舒适版) 或 12张 (3x4)
+    - 5寸 (89x127mm):  一寸 8张 (4x2舒适版) / 二寸 4张 (2x2舒适版)
     """
+    # 照相馆规范参数 (相纸宽, 相纸高, 列数, 行数, gap_mm, margin_mm)
     standards = {
-        (102, 152, 25, 35): (102, 152, 4, 4, 0.8, 2.5),
-        (102, 152, 35, 49): (152, 102, 4, 2, 1.0, 3.0),
-        (102, 152, 35, 45): (152, 102, 4, 2, 1.0, 3.0),
-        (102, 152, 33, 48): (152, 102, 4, 2, 1.0, 3.0),
-        (89, 127, 25, 35):  (89, 127, 3, 3, 1.5, 4.0),
-        (89, 127, 35, 49):  (89, 127, 2, 2, 2.0, 5.0),
-        (127, 178, 25, 35): (127, 178, 4, 4, 1.5, 4.0),
-        (127, 178, 35, 49): (127, 178, 3, 3, 1.5, 4.0),
+        (102, 152, 25, 35): (152, 102, 4, 2, 2.0, 4.0),   # 6寸排一寸: 8张舒适版
+        (102, 152, 35, 49): (152, 102, 4, 2, 1.2, 3.0),   # 6寸排二寸: 8张
+        (102, 152, 35, 45): (152, 102, 4, 2, 1.2, 3.0),   # 6寸排小二寸: 8张
+        (102, 152, 33, 48): (152, 102, 4, 2, 1.2, 3.0),   # 6寸排大一寸: 8张
+        (89, 127, 25, 35):  (127, 89, 4, 2, 2.0, 4.0),    # 5寸排一寸: 8张舒适版
+        (89, 127, 35, 49):  (89, 127, 2, 2, 2.0, 5.0),    # 5寸排二寸: 4张舒适版
+        (127, 178, 25, 35): (127, 178, 4, 3, 2.0, 5.0),   # 7寸排一寸: 12张
+        (127, 178, 35, 49): (127, 178, 3, 3, 2.0, 5.0),   # 7寸排二寸: 9张
     }
 
     key = (min(paper_w_mm, paper_h_mm), max(paper_w_mm, paper_h_mm), id_w_mm, id_h_mm)
@@ -409,8 +373,8 @@ def compute_layout(paper_w_mm, paper_h_mm, id_w_mm, id_h_mm):
     else:
         best = None
         for (w_p_c, h_p_c) in [(paper_w_mm, paper_h_mm), (paper_h_mm, paper_w_mm)]:
-            for g_c in [1.0, 0.5]:
-                for m_c in [3.0, 2.0, 1.0]:
+            for g_c in [2.0, 1.5, 1.0]:
+                for m_c in [5.0, 4.0, 3.0]:
                     cols_c = int((w_p_c - 2 * m_c + g_c) // (id_w_mm + g_c))
                     rows_c = int((h_p_c - 2 * m_c + g_c) // (id_h_mm + g_c))
                     if cols_c >= 1 and rows_c >= 1:
@@ -447,7 +411,7 @@ def compute_layout(paper_w_mm, paper_h_mm, id_w_mm, id_h_mm):
 
 def compute_layout_grid(id_w_mm, id_h_mm, rows, cols):
     iw = mm_to_px(id_w_mm); ih = mm_to_px(id_h_mm)
-    m = mm_to_px(3.0); g = mm_to_px(1.5)
+    m = mm_to_px(4.0); g = mm_to_px(2.0)
     pw = cols * iw + (cols - 1) * g + 2 * m
     ph = rows * ih + (rows - 1) * g + 2 * m
     start_x = m; start_y = m
@@ -466,11 +430,6 @@ def compute_layout_grid(id_w_mm, id_h_mm, rows, cols):
 
 # ============================================================ 常用混排方案
 def compose_mixed_sheet(id_1in, id_2in, mix_type="6in_4_4", cut_lines=True, add_text=True):
-    """
-    冲印混排标准版（全正立直放，不旋转）：
-    - 6in_4_4: 6寸相纸 (102x152mm) -> 上方4张二寸 (2x2) + 下方4张一寸 (4x1)
-    - 5in_2_4: 5寸相纸 (127x89mm)  -> 左侧2张二寸 (2x1) + 右侧4张一寸 (2x2)
-    """
     if mix_type == "5in_2_4":
         pw, ph = mm_to_px(127), mm_to_px(89)
         sheet = Image.new("RGB", (pw, ph), (255, 255, 255))
@@ -490,7 +449,6 @@ def compose_mixed_sheet(id_1in, id_2in, mix_type="6in_4_4", cut_lines=True, add_
             x = ox + c * (w_2in + gap)
             sheet.paste(id_2in, (x, oy_2in))
             draw.rectangle([x, oy_2in, x + w_2in - 1, oy_2in + h_2in - 1], outline=border_c, width=1)
-            # 浅灰虚线/标线
             if cut_lines:
                 _draw_dashed_rect(draw, x, oy_2in, w_2in, h_2in)
 
@@ -526,7 +484,6 @@ def compose_mixed_sheet(id_1in, id_2in, mix_type="6in_4_4", cut_lines=True, add_
         gap = int(round(1.0 * PX_PER_MM))
         border_c = (200, 200, 200)
 
-        # 上半部 4 张二寸 (2列 x 2行)
         ox_2in = (pw - (w_2in * 2 + gap)) // 2
         oy_2in = 70
         for r in range(2):
@@ -538,7 +495,6 @@ def compose_mixed_sheet(id_1in, id_2in, mix_type="6in_4_4", cut_lines=True, add_
                 if cut_lines:
                     _draw_dashed_rect(draw, x, y, w_2in, h_2in)
 
-        # 下半部 4 张一寸 (4列 x 1行，全部正立直放)
         ox_1in = (pw - (w_1in * 4)) // 2
         oy_1in = oy_2in + 2 * (h_2in + gap) + 24
         for c in range(4):
@@ -560,27 +516,15 @@ def compose_mixed_sheet(id_1in, id_2in, mix_type="6in_4_4", cut_lines=True, add_
         return sheet, info
 
 
-# ============================================================ 排版图生成绘制 (带清晰浅灰裁切虚线)
 def _draw_dashed_rect(draw, x, y, w, h, color=(200, 200, 200), dash=6, gap=4):
-    """在相片四周绘制精致的浅灰虚线，确保白底照片在白相纸上一目了然"""
-    # 顶部
     cur_x = x
     while cur_x < x + w:
         draw.line([(cur_x, y), (min(cur_x + dash, x + w), y)], fill=color, width=1)
-        cur_x += dash + gap
-    # 底部
-    cur_x = x
-    while cur_x < x + w:
         draw.line([(cur_x, y + h - 1), (min(cur_x + dash, x + w), y + h - 1)], fill=color, width=1)
         cur_x += dash + gap
-    # 左侧
     cur_y = y
     while cur_y < y + h:
         draw.line([(x, cur_y), (x, min(cur_y + dash, y + h))], fill=color, width=1)
-        cur_y += dash + gap
-    # 右侧
-    cur_y = y
-    while cur_y < y + h:
         draw.line([(x + w - 1, cur_y), (x + w - 1, min(cur_y + dash, y + h))], fill=color, width=1)
         cur_y += dash + gap
 
@@ -596,13 +540,10 @@ def compose_sheet(id_photo, layout, sheet_color=(255, 255, 255),
     for (x, y) in layout["positions"]:
         x, y = int(x), int(y)
         sheet.paste(id_photo, (x, y))
-        # 1px 细边框，防止白底照片融入白相纸
         draw.rectangle([x, y, x + iw - 1, y + ih - 1], outline=border_color, width=1)
-        # 裁切虚线
         if cut_lines:
             _draw_dashed_rect(draw, x, y, iw, ih)
 
-    # 外围角标线
     if cut_lines and layout["count"] > 1:
         mark_c = (170, 170, 170)
         for (x, y) in layout["positions"]:
@@ -611,7 +552,6 @@ def compose_sheet(id_photo, layout, sheet_color=(255, 255, 255),
             draw.line([(x - 8, y), (x, y)], fill=mark_c, width=1)
             draw.line([(x - 8, y + ih), (x, y + ih)], fill=mark_c, width=1)
 
-    # 顶部尺寸标注
     if size_name or size_dims:
         label = f"{size_name} {size_dims}".strip()
         if label:
