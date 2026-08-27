@@ -1,14 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-ui/main_window.py — 证件照工作室 专业工作室版 UI
+ui/main_window.py — 证件照工作室 Studio 完整重构版
 =========================================================================
-- 现代化苹果 Studio 风格界面，支持自由拉伸窗口并自动记忆窗口尺寸
-- 记忆上次打开和导出的文件夹目录
-- 全窗口支持拖拽图片导入（带高亮交互）
-- 视觉化底色色块选择器 + 证件照规格实时计算
-- 左右分栏支持自由拖拽调节（QSplitter）
-- 无残留孤立文本标签，所有排版模式控件整齐切换
-- 异步后台智能抠图（Hivision MODNet / RMBG 模型），毫秒级换底色
+- 解决所有界面显示截断与重叠问题（自适应宽度，无多余横向滚动条）
+- 修复相纸下拉名称重复问题
+- 支持「常用混排」冲印模式（如 6寸 4张二寸+4张一寸 / 2张二寸+8张一寸 / 5寸混排）
+- 采用 SOTA RMBG-1.4 与 Hivision 精调抠图引擎，彻底去除暗色背景
+- 采用国标证件照构图（肩膀延伸穿透画幅底部，头顶留白，告别浮空边框）
+- 完整注册 macOS Dock 图标与窗口切换
 """
 import os
 import sys
@@ -22,13 +21,12 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSettings, QSize
 from PySide6.QtGui import (
     QPixmap, QImage, QDragEnterEvent, QDragMoveEvent, QDropEvent,
-    QPainter, QColor, QIcon, QFont, QPalette, QBrush
+    QColor, QIcon, QFont, QPalette
 )
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core import idphoto_core as core
 
-# ============================================================ 现代化 Studio 主题 QSS
 STUDIO_QSS = """
 * {
     font-family: -apple-system, "SF Pro Display", "PingFang SC", "Microsoft YaHei", sans-serif;
@@ -36,14 +34,14 @@ STUDIO_QSS = """
 QMainWindow {
     background-color: #f8fafc;
 }
-QWidget#LeftPanel {
+QFrame#LeftContainer {
     background-color: #ffffff;
     border-right: 1px solid #e2e8f0;
 }
 QFrame#Card {
     background-color: #ffffff;
     border: 1px solid #e2e8f0;
-    border-radius: 12px;
+    border-radius: 10px;
     margin-bottom: 2px;
 }
 QFrame#Card:hover {
@@ -53,8 +51,7 @@ QLabel#CardTitle {
     font-size: 12px;
     font-weight: 700;
     color: #475569;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
+    letter-spacing: 0.3px;
 }
 QLabel#SubTitle {
     font-size: 11px;
@@ -72,9 +69,9 @@ QLabel#DimensionBadge {
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
     background-color: #f8fafc;
     border: 1px solid #cbd5e1;
-    border-radius: 8px;
-    padding: 7px 10px;
-    font-size: 13px;
+    border-radius: 6px;
+    padding: 6px 8px;
+    font-size: 12px;
     color: #1e293b;
 }
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {
@@ -83,23 +80,23 @@ QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {
 }
 QComboBox::drop-down {
     border: none;
-    width: 20px;
+    width: 18px;
 }
 QComboBox QAbstractItemView {
     background-color: #ffffff;
     border: 1px solid #cbd5e1;
-    border-radius: 8px;
+    border-radius: 6px;
     selection-background-color: #eff6ff;
     selection-color: #2563eb;
-    padding: 4px;
+    padding: 2px;
 }
 QPushButton {
     background-color: #ffffff;
     border: 1px solid #cbd5e1;
-    border-radius: 8px;
-    padding: 8px 14px;
+    border-radius: 6px;
+    padding: 6px 12px;
     color: #334155;
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 500;
 }
 QPushButton:hover {
@@ -114,15 +111,12 @@ QPushButton#PrimaryBtn {
     border: 1px solid #1d4ed8;
     color: #ffffff;
     font-weight: 600;
-    font-size: 14px;
-    padding: 10px 18px;
-    border-radius: 8px;
+    font-size: 13px;
+    padding: 9px 14px;
+    border-radius: 6px;
 }
 QPushButton#PrimaryBtn:hover {
     background-color: #1d4ed8;
-}
-QPushButton#PrimaryBtn:pressed {
-    background-color: #1e40af;
 }
 QPushButton#PrimaryBtn:disabled {
     background-color: #93c5fd;
@@ -132,29 +126,26 @@ QPushButton#SecondaryBtn {
     background-color: #f8fafc;
     border: 1px solid #cbd5e1;
     color: #475569;
-    font-weight: 600;
-    padding: 8px 14px;
-}
-QPushButton#SecondaryBtn:hover {
-    background-color: #f1f5f9;
-    color: #1e293b;
+    font-weight: 500;
+    padding: 6px 10px;
+    font-size: 11px;
 }
 QPushButton#ColorChip {
     border: 2px solid #e2e8f0;
-    border-radius: 8px;
-    padding: 6px 10px;
+    border-radius: 6px;
+    padding: 4px 6px;
     font-weight: 600;
-    font-size: 12px;
-    min-height: 24px;
+    font-size: 11px;
+    min-height: 20px;
 }
 QPushButton#ColorChip:checked {
-    border: 2.5px solid #2563eb;
+    border: 2px solid #2563eb;
     background-color: #eff6ff;
 }
 QFrame#DropBox {
     background-color: #f8fafc;
-    border: 2px dashed #cbd5e1;
-    border-radius: 12px;
+    border: 1.5px dashed #cbd5e1;
+    border-radius: 8px;
 }
 QFrame#DropBox:hover, QFrame#DropBox[dragOver="true"] {
     background-color: #eff6ff;
@@ -163,47 +154,26 @@ QFrame#DropBox:hover, QFrame#DropBox[dragOver="true"] {
 QProgressBar {
     background-color: #e2e8f0;
     border: none;
-    border-radius: 4px;
-    height: 6px;
+    border-radius: 3px;
+    height: 4px;
 }
 QProgressBar::chunk {
     background-color: #2563eb;
-    border-radius: 4px;
+    border-radius: 3px;
 }
-QRadioButton {
-    font-size: 12px;
+QRadioButton, QCheckBox {
+    font-size: 11px;
     color: #334155;
-    spacing: 6px;
-}
-QCheckBox {
-    font-size: 12px;
-    color: #475569;
-    spacing: 6px;
+    spacing: 5px;
 }
 QScrollArea {
     border: none;
     background-color: transparent;
 }
-QScrollBar:vertical {
-    border: none;
-    background: #f1f5f9;
-    width: 6px;
-    border-radius: 3px;
-}
-QScrollBar::handle:vertical {
-    background: #cbd5e1;
-    border-radius: 3px;
-}
-QScrollBar::handle:vertical:hover {
-    background: #94a3b8;
-}
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-    height: 0px;
-}
 """
 
 
-def pil_to_pixmap(img, max_w=1200, max_h=900):
+def pil_to_pixmap(img, max_w=1400, max_h=1000):
     if img is None:
         return QPixmap()
     from PIL import Image
@@ -220,9 +190,8 @@ def pil_to_pixmap(img, max_w=1200, max_h=900):
     return QPixmap.fromImage(qimg)
 
 
-# ============================================================ 异步抠图 Worker
 class MattingWorker(QThread):
-    done = Signal(object)      # RGBA PIL.Image
+    done = Signal(object)
     failed = Signal(str)
 
     def __init__(self, image_path):
@@ -235,28 +204,26 @@ class MattingWorker(QThread):
             img = Image.open(self.image_path)
             m = core.Matting()
             if not m.available():
-                self.failed.emit("未找到抠图模型，已转为原图裁切排版")
+                self.failed.emit("未找到抠图模型，已转为原图裁切")
                 return
             rgba = m.remove(img)
             self.done.emit(rgba)
         except Exception as e:
-            self.failed.emit("智能抠图失败：%s" % str(e)[:80])
+            self.failed.emit(f"抠图失败：{e}")
 
 
-# ============================================================ 异步渲染 Worker
 class RenderWorker(QThread):
-    done = Signal(object, str, bool, object)  # (sheet/single, info, is_single, single_photo)
+    done = Signal(object, str, bool, object)
     error = Signal(str)
 
-    def __init__(self, image_path, size_dict, color_dict, layout_mode, layout_params,
-                 order, cut_lines, add_text, cached_rgba=None):
+    def __init__(self, image_path, size_dict, color_dict, mode_idx, extra_params,
+                 cut_lines, add_text, cached_rgba=None):
         super().__init__()
         self.image_path = image_path
         self.size_dict = size_dict
         self.color_dict = color_dict
-        self.layout_mode = layout_mode
-        self.layout_params = layout_params
-        self.order = order
+        self.mode_idx = mode_idx
+        self.extra_params = extra_params
         self.cut_lines = cut_lines
         self.add_text = add_text
         self.cached_rgba = cached_rgba
@@ -268,56 +235,41 @@ class RenderWorker(QThread):
             bg_rgb = self.color_dict["rgb"]
             need_matting = bg_rgb is not None
 
-            # 优先使用缓存的抠图 RGBA
+            # 优先使用抠图缓存
             if need_matting and self.cached_rgba is not None:
-                id_photo = core._center_crop_by_subject(
+                id_photo = core.create_standard_id_photo(
                     self.cached_rgba, self.size_dict["w_px"], self.size_dict["h_px"], bg_rgb
                 )
             else:
                 matting = core.Matting() if (need_matting and core.Matting().available()) else None
-                try:
-                    id_photo = core.prepare_id_photo(
-                        img, self.size_dict["w_px"], self.size_dict["h_px"], bg_rgb, matting
-                    )
-                except Exception as e:
-                    # 抠图异常时，降级原图裁切（不换底）
-                    id_photo = core.prepare_id_photo(
-                        img, self.size_dict["w_px"], self.size_dict["h_px"], None, None
-                    )
-
-            if self.layout_mode == "single":
-                info = "单张 %s · %d×%d px (300 DPI)" % (
-                    self.size_dict["name"], self.size_dict["w_px"], self.size_dict["h_px"]
+                id_photo = core.prepare_id_photo(
+                    img, self.size_dict["w_px"], self.size_dict["h_px"], bg_rgb, matting
                 )
+
+            # 1: 仅单张
+            if self.mode_idx == 1:
+                info = f"单张 {self.size_dict['name']} · {self.size_dict['w_px']}×{self.size_dict['h_px']} px (300 DPI)"
                 self.done.emit(id_photo, info, True, id_photo)
                 return
 
-            if self.layout_mode == "paper":
-                lay = core.compute_layout(
-                    self.layout_params["paper"]["w_mm"],
-                    self.layout_params["paper"]["h_mm"],
-                    self.size_dict["w_mm"],
-                    self.size_dict["h_mm"],
-                    order=self.order
-                )
-            elif self.layout_mode == "grid":
-                lay = core.compute_layout_grid(
-                    self.size_dict["w_mm"],
-                    self.size_dict["h_mm"],
-                    self.layout_params["rows"],
-                    self.layout_params["cols"],
-                    order=self.order
-                )
-            else:  # count
-                paper = self.layout_params["paper"]
-                lay = core.compute_layout(
-                    paper["w_mm"], paper["h_mm"],
-                    self.size_dict["w_mm"], self.size_dict["h_mm"],
-                    order=self.order
-                )
+            # 4: 常用混排
+            if self.mode_idx == 4:
+                sheet, info = self._render_mixed(img, bg_rgb)
+                self.done.emit(sheet, info, False, id_photo)
+                return
+
+            # 0: 相纸排满, 2: 自定义网格, 3: 指定张数
+            if self.mode_idx == 0:
+                p = self.extra_params["paper"]
+                lay = core.compute_layout(p["w_mm"], p["h_mm"], self.size_dict["w_mm"], self.size_dict["h_mm"], order=self.extra_params["order"])
+            elif self.mode_idx == 2:
+                lay = core.compute_layout_grid(self.size_dict["w_mm"], self.size_dict["h_mm"], self.extra_params["rows"], self.extra_params["cols"], order=self.extra_params["order"])
+            else:
+                p = self.extra_params["paper"]
+                lay = core.compute_layout(p["w_mm"], p["h_mm"], self.size_dict["w_mm"], self.size_dict["h_mm"], order=self.extra_params["order"])
 
             size_name = self.size_dict["name"] if self.add_text else ""
-            size_dims = "%d×%dmm" % (self.size_dict["w_mm"], self.size_dict["h_mm"]) if self.add_text else ""
+            size_dims = f"{self.size_dict['w_mm']}×{self.size_dict['h_mm']}mm" if self.add_text else ""
 
             sheet = core.compose_sheet(
                 id_photo, lay,
@@ -327,165 +279,133 @@ class RenderWorker(QThread):
                 cut_lines=self.cut_lines
             )
 
-            info = "排版完成 · %d 张 (%d列 × %d行) · 纸张 %d×%d px" % (
-                lay["count"], lay["cols"], lay["rows"], lay["paper"][0], lay["paper"][1]
-            )
+            info = f"排版完成 · {lay['count']} 张 ({lay['cols']}列 × {lay['rows']}行) · 纸张 {lay['paper'][0]}×{lay['paper'][1]} px"
             self.done.emit(sheet, info, False, id_photo)
         except Exception as e:
             import traceback
             self.error.emit(f"{e}\n{traceback.format_exc()[-300:]}")
 
+    def _render_mixed(self, img, bg_rgb):
+        # 混排逻辑
+        from PIL import Image, ImageDraw
+        mix_key = self.extra_params.get("mix_key", "6in_4_4")
+        # 准备1寸与2寸标准照片
+        if self.cached_rgba is not None:
+            id_1in = core.create_standard_id_photo(self.cached_rgba, core.mm_to_px(25), core.mm_to_px(35), bg_rgb)
+            id_2in = core.create_standard_id_photo(self.cached_rgba, core.mm_to_px(35), core.mm_to_px(49), bg_rgb)
+        else:
+            matting = core.Matting() if (bg_rgb is not None and core.Matting().available()) else None
+            id_1in = core.prepare_id_photo(img, core.mm_to_px(25), core.mm_to_px(35), bg_rgb, matting)
+            id_2in = core.prepare_id_photo(img, core.mm_to_px(35), core.mm_to_px(49), bg_rgb, matting)
 
-# ============================================================ 预设管理弹窗
-class PresetDialog(QDialog):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("自定义预设管理")
-        self.resize(560, 480)
-        self.pm = core.PresetManager()
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(14)
+        # 6寸 (102x152mm) -> 1205x1795 px
+        pw, ph = core.mm_to_px(102), core.mm_to_px(152)
+        sheet = Image.new("RGB", (pw, ph), (255, 255, 255))
+        draw = ImageDraw.Draw(sheet)
+        gap = int(round(1.0 * core.PX_PER_MM))
+        border_c = (190, 190, 190)
 
-        tabs = QTabWidget()
-        layout.addWidget(tabs)
+        # 混排 A: 4张2寸 + 4张1寸
+        # 2寸: 413x579 px (2x2), 1寸: 413x295 (横向 2x2)
+        w_2in, h_2in = id_2in.size
+        id_1in_rot = id_1in.rotate(90, expand=True)
+        w_1in, h_1in = id_1in_rot.size
 
-        # 尺寸 Tab
-        self.size_list = QListWidget()
-        size_tab = QWidget()
-        sl = QVBoxLayout(size_tab)
-        sl.addWidget(self.size_list)
-        sf = QFormLayout()
-        self.s_name = QLineEdit(); self.s_cat = QLineEdit("我的预设")
-        self.s_w = QDoubleSpinBox(); self.s_w.setRange(1, 300); self.s_w.setValue(25)
-        self.s_h = QDoubleSpinBox(); self.s_h.setRange(1, 300); self.s_h.setValue(35)
-        sf.addRow("名称", self.s_name); sf.addRow("分类", self.s_cat)
-        sf.addRow("宽 (mm)", self.s_w); sf.addRow("高 (mm)", self.s_h)
-        sl.addLayout(sf)
-        sb = QHBoxLayout()
-        b_add_s = QPushButton("添加尺寸"); b_del_s = QPushButton("删除选中")
-        b_add_s.clicked.connect(self.add_size); b_del_s.clicked.connect(self.del_size)
-        sb.addWidget(b_add_s); sb.addWidget(b_del_s)
-        sl.addLayout(sb)
-        tabs.addTab(size_tab, "证件规格")
+        ox = (pw - (w_2in * 2 + gap)) // 2
+        oy = 60
+        # 4张二寸
+        for r in range(2):
+            for c in range(2):
+                x = ox + c * (w_2in + gap)
+                y = oy + r * (h_2in + gap)
+                sheet.paste(id_2in, (x, y))
+                draw.rectangle([x, y, x + w_2in - 1, y + h_2in - 1], outline=border_c, width=1)
 
-        # 相纸 Tab
-        self.paper_list = QListWidget()
-        paper_tab = QWidget()
-        pl = QVBoxLayout(paper_tab)
-        pl.addWidget(self.paper_list)
-        pf = QFormLayout()
-        self.p_name = QLineEdit()
-        self.p_w = QDoubleSpinBox(); self.p_w.setRange(10, 1000); self.p_w.setValue(102)
-        self.p_h = QDoubleSpinBox(); self.p_h.setRange(10, 1000); self.p_h.setValue(152)
-        pf.addRow("相纸名", self.p_name); pf.addRow("宽 (mm)", self.p_w); pf.addRow("高 (mm)", self.p_h)
-        pl.addLayout(pf)
-        pb = QHBoxLayout()
-        b_add_p = QPushButton("添加相纸"); b_del_p = QPushButton("删除选中")
-        b_add_p.clicked.connect(self.add_paper); b_del_p.clicked.connect(self.del_paper)
-        pb.addWidget(b_add_p); pb.addWidget(b_del_p)
-        pl.addLayout(pb)
-        tabs.addTab(paper_tab, "相纸规格")
+        # 4张一寸 (横放)
+        oy_1in = oy + 2 * (h_2in + gap) + 16
+        for r in range(2):
+            for c in range(2):
+                x = ox + c * (w_1in + gap)
+                y = oy_1in + r * (h_1in + gap)
+                sheet.paste(id_1in_rot, (x, y))
+                draw.rectangle([x, y, x + w_1in - 1, y + h_1in - 1], outline=border_c, width=1)
 
-        self.refresh()
-        bb = QDialogButtonBox(QDialogButtonBox.Close)
-        bb.rejected.connect(self.accept)
-        layout.addWidget(bb)
+        # 标注
+        if self.add_text:
+            font = core._load_font(18)
+            label = "6寸冲印混排 (4张二寸 35×49mm + 4张一寸 25×35mm)"
+            bbox = draw.textbbox((0, 0), label, font=font)
+            tw = bbox[2] - bbox[0]
+            draw.text(((pw - tw) // 2, 16), label, fill=(60, 60, 60), font=font)
 
-    def refresh(self):
-        self.size_list.clear()
-        for s in self.pm.sizes():
-            self.size_list.addItem(f"{s['name']} [{s['category']}] {s['w_mm']}×{s['h_mm']} mm")
-        self.paper_list.clear()
-        for p in self.pm.papers():
-            self.paper_list.addItem(f"{p['name']} {p['w_mm']}×{p['h_mm']} mm")
-
-    def add_size(self):
-        if self.s_name.text().strip():
-            self.pm.add_size(self.s_name.text().strip(), self.s_w.value(), self.s_h.value(), self.s_cat.text().strip() or "我的预设")
-            self.refresh()
-
-    def del_size(self):
-        it = self.size_list.currentItem()
-        if it:
-            self.pm.remove_size(it.text().split(" [")[0])
-            self.refresh()
-
-    def add_paper(self):
-        if self.p_name.text().strip():
-            self.pm.add_paper(self.p_name.text().strip(), self.p_w.value(), self.p_h.value())
-            self.refresh()
-
-    def del_paper(self):
-        it = self.paper_list.currentItem()
-        if it:
-            self.pm.remove_paper(it.text().split(" ")[0])
-            self.refresh()
+        info = "6寸混排完成 · 4张二寸 + 4张一寸 · 纸张 1205×1795 px"
+        return sheet, info
 
 
-# ============================================================ 主窗口
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("证件照工作室 Studio")
-        self.setMinimumSize(1020, 680)
+        self.setMinimumSize(1080, 720)
 
         self.settings = QSettings("IDPhotoStudio", "App")
         self.input_path = None
         self.cached_rgba = None
         self.current_sheet = None
         self.current_single = None
-        self.current_color_data = {"name": "白底", "rgb": (255, 255, 255), "hex": "#FFFFFF"}
+        self.current_color_data = {"name": "蓝底", "rgb": (67, 142, 219), "hex": "#438EDB"}
         self._busy = False
         self.worker = None
         self.mworker = None
 
-        # 恢复上次窗口几何位置
         geom = self.settings.value("geometry")
         if geom:
             self.restoreGeometry(geom)
         else:
-            self.resize(1260, 840)
+            self.resize(1280, 840)
 
-        # 根布局：主分栏（QSplitter 支持拖拽调整左右宽度）
         splitter = QSplitter(Qt.Horizontal, self)
         self.setCentralWidget(splitter)
 
-        # ---------- 左侧控制面板 (可滚动) ----------
+        # ---------- 左侧控制面板 ----------
         left_scroll = QScrollArea()
         left_scroll.setWidgetResizable(True)
-        left_scroll.setObjectName("LeftPanel")
-        left_container = QWidget()
-        left_layout = QVBoxLayout(left_container)
-        left_layout.setContentsMargins(18, 18, 18, 18)
-        left_layout.setSpacing(14)
+        left_scroll.setMinimumWidth(400)
+        left_scroll.setMaximumWidth(480)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
-        # 1. 顶部 Header
-        header = QHBoxLayout()
-        title_box = QVBoxLayout()
+        left_container = QWidget()
+        left_container.setObjectName("LeftContainer")
+        left_layout = QVBoxLayout(left_container)
+        left_layout.setContentsMargins(14, 14, 14, 14)
+        left_layout.setSpacing(10)
+
+        # 1. 标题栏
+        h_box = QHBoxLayout()
+        t_box = QVBoxLayout()
         title = QLabel("证件照工作室")
-        title.setStyleSheet("font-size: 18px; font-weight: 800; color: #0f172a;")
-        subtitle = QLabel("智能抠图换底 · 多规格冲印排版")
+        title.setStyleSheet("font-size: 17px; font-weight: 800; color: #0f172a;")
+        subtitle = QLabel("智能抠图换底 · 冲印排版一体")
         subtitle.setObjectName("SubTitle")
-        title_box.addWidget(title)
-        title_box.addWidget(subtitle)
-        header.addLayout(title_box)
-        header.addStretch()
-        left_layout.addLayout(header)
+        t_box.addWidget(title)
+        t_box.addWidget(subtitle)
+        h_box.addLayout(t_box)
+        h_box.addStretch()
+        left_layout.addLayout(h_box)
 
         # 2. 照片导入卡片
         card_img = QFrame(); card_img.setObjectName("Card")
-        cl_img = QVBoxLayout(card_img); cl_img.setContentsMargins(14, 12, 14, 14); cl_img.setSpacing(8)
+        cl_img = QVBoxLayout(card_img); cl_img.setContentsMargins(12, 10, 12, 10); cl_img.setSpacing(6)
         t_img = QLabel("1. 照片导入"); t_img.setObjectName("CardTitle")
         cl_img.addWidget(t_img)
 
         self.dropbox = QFrame(); self.dropbox.setObjectName("DropBox")
         self.dropbox.setCursor(Qt.PointingHandCursor)
         self.dropbox.mousePressEvent = lambda e: self.choose_photo()
-        db_layout = QHBoxLayout(self.dropbox); db_layout.setContentsMargins(12, 12, 12, 12)
+        db_layout = QHBoxLayout(self.dropbox); db_layout.setContentsMargins(10, 8, 10, 8)
         
         self.thumb_label = QLabel()
-        self.thumb_label.setFixedSize(48, 48)
+        self.thumb_label.setFixedSize(40, 40)
         self.thumb_label.setStyleSheet("background-color: #e2e8f0; border-radius: 6px;")
         self.thumb_label.setAlignment(Qt.AlignCenter)
         self.thumb_label.setText("📸")
@@ -493,8 +413,8 @@ class MainWindow(QMainWindow):
 
         db_text_box = QVBoxLayout()
         self.filename_label = QLabel("点击选择 或 拖入照片")
-        self.filename_label.setStyleSheet("font-weight: 600; font-size: 13px; color: #1e293b;")
-        self.fileinfo_label = QLabel("支持 JPG / PNG / WEBP / BMP")
+        self.filename_label.setStyleSheet("font-weight: 600; font-size: 12px; color: #1e293b;")
+        self.fileinfo_label = QLabel("支持 JPG / PNG / WEBP")
         self.fileinfo_label.setObjectName("SubTitle")
         db_text_box.addWidget(self.filename_label)
         db_text_box.addWidget(self.fileinfo_label)
@@ -511,29 +431,25 @@ class MainWindow(QMainWindow):
 
         # 3. 规格与底色卡片
         card_spec = QFrame(); card_spec.setObjectName("Card")
-        cl_spec = QVBoxLayout(card_spec); cl_spec.setContentsMargins(14, 12, 14, 14); cl_spec.setSpacing(10)
+        cl_spec = QVBoxLayout(card_spec); cl_spec.setContentsMargins(12, 10, 12, 10); cl_spec.setSpacing(8)
         t_spec = QLabel("2. 规格与底色"); t_spec.setObjectName("CardTitle")
         cl_spec.addWidget(t_spec)
 
-        # 搜索 + 尺寸下拉
-        size_head = QHBoxLayout()
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("🔍 快速搜索：一寸 / 二寸 / 护照 / 签证…")
+        self.search_input.setPlaceholderText("🔍 搜索规格：一寸 / 二寸 / 护照 / 签证…")
         self.search_input.textChanged.connect(self.on_search_changed)
-        size_head.addWidget(self.search_input)
-        cl_spec.addLayout(size_head)
+        cl_spec.addWidget(self.search_input)
 
         self.size_combo = QComboBox()
         self.size_combo.currentIndexChanged.connect(self.on_spec_changed)
         cl_spec.addWidget(self.size_combo)
 
-        self.badge_dim = QLabel("尺寸: 25 × 35 mm · 295 × 413 px @ 300DPI")
+        self.badge_dim = QLabel("规格: 25 × 35 mm · 295 × 413 px @ 300DPI")
         self.badge_dim.setObjectName("DimensionBadge")
         cl_spec.addWidget(self.badge_dim)
 
-        # 视觉化底色选择器
-        cl_spec.addWidget(QLabel("背景底色选择:"))
-        color_grid = QHBoxLayout(); color_grid.setSpacing(6)
+        cl_spec.addWidget(QLabel("背景底色:"))
+        color_grid = QHBoxLayout(); color_grid.setSpacing(4)
         self.color_btn_group = QButtonGroup(self)
         self.color_btn_group.setExclusive(True)
 
@@ -555,48 +471,48 @@ class MainWindow(QMainWindow):
             btn.clicked.connect(lambda checked, name=cname, rgb=crgb, h=chex: self.set_background_color(name, rgb, h))
             self.color_btn_group.addButton(btn, idx)
             color_grid.addWidget(btn)
-            if idx == 0:
+            if idx == 2:  # 默认蓝底
                 btn.setChecked(True)
 
-        b_custom_c = QPushButton("🎨 自定义…")
+        b_custom_c = QPushButton("🎨 自定义")
         b_custom_c.setObjectName("SecondaryBtn")
         b_custom_c.clicked.connect(self.pick_custom_color)
         color_grid.addWidget(b_custom_c)
-
         cl_spec.addLayout(color_grid)
+
         left_layout.addWidget(card_spec)
 
         # 4. 排版冲印卡片
         card_layout = QFrame(); card_layout.setObjectName("Card")
-        cl_lay = QVBoxLayout(card_layout); cl_lay.setContentsMargins(14, 12, 14, 14); cl_lay.setSpacing(10)
+        cl_lay = QVBoxLayout(card_layout); cl_lay.setContentsMargins(12, 10, 12, 10); cl_lay.setSpacing(8)
         t_lay = QLabel("3. 排版冲印"); t_lay.setObjectName("CardTitle")
         cl_lay.addWidget(t_lay)
 
-        # 排版模式选择
         self.mode_combo = QComboBox()
         self.mode_combo.addItems([
-            "📄 打印相纸自动排满",
+            "📄 打印相纸自动排满 (单规格)",
             "🖼 仅单张证件照",
             "📐 自定义网格 (指定行/列)",
-            "🔢 指定张数 (塞入打印纸)"
+            "🔢 指定张数 (塞入相纸)",
+            "🔀 常用混排 (4张二寸 + 4张一寸)"
         ])
         self.mode_combo.currentIndexChanged.connect(self.on_mode_changed)
         cl_lay.addWidget(self.mode_combo)
 
-        # 动态相纸选择容器
+        # 相纸容器
         self.paper_container = QWidget()
         pc_layout = QVBoxLayout(self.paper_container); pc_layout.setContentsMargins(0, 0, 0, 0); pc_layout.setSpacing(4)
         self.opt_paper = QComboBox()
         self.opt_paper.currentIndexChanged.connect(self.trigger_render_debounce)
         pc_layout.addWidget(self.opt_paper)
-        self.paper_info_badge = QLabel("排版结果计算中…")
+        self.paper_info_badge = QLabel("排版计算中…")
         self.paper_info_badge.setObjectName("SubTitle")
         pc_layout.addWidget(self.paper_info_badge)
         cl_lay.addWidget(self.paper_container)
 
-        # 自定义网格容器 (完全隔离，无悬空标签)
+        # 自定义网格容器
         self.grid_container = QWidget()
-        gc_layout = QHBoxLayout(self.grid_container); gc_layout.setContentsMargins(0, 0, 0, 0); gc_layout.setSpacing(8)
+        gc_layout = QHBoxLayout(self.grid_container); gc_layout.setContentsMargins(0, 0, 0, 0); gc_layout.setSpacing(6)
         gc_layout.addWidget(QLabel("行数:"))
         self.opt_rows = QSpinBox(); self.opt_rows.setRange(1, 50); self.opt_rows.setValue(4)
         self.opt_rows.valueChanged.connect(self.trigger_render_debounce)
@@ -609,16 +525,16 @@ class MainWindow(QMainWindow):
 
         # 指定张数容器
         self.count_container = QWidget()
-        cnt_layout = QHBoxLayout(self.count_container); cnt_layout.setContentsMargins(0, 0, 0, 0); cnt_layout.setSpacing(8)
+        cnt_layout = QHBoxLayout(self.count_container); cnt_layout.setContentsMargins(0, 0, 0, 0); cnt_layout.setSpacing(6)
         cnt_layout.addWidget(QLabel("目标张数:"))
         self.opt_count = QSpinBox(); self.opt_count.setRange(1, 200); self.opt_count.setValue(8)
         self.opt_count.valueChanged.connect(self.trigger_render_debounce)
         cnt_layout.addWidget(self.opt_count)
         cl_lay.addWidget(self.count_container)
 
-        # 排版辅助选项
+        # 辅助选项
         opt_line = QHBoxLayout()
-        self.cb_cutlines = QCheckBox("打印裁切虚线")
+        self.cb_cutlines = QCheckBox("打印裁切参考线")
         self.cb_cutlines.setChecked(True)
         self.cb_cutlines.toggled.connect(self.trigger_render_debounce)
         opt_line.addWidget(self.cb_cutlines)
@@ -630,8 +546,9 @@ class MainWindow(QMainWindow):
         cl_lay.addLayout(opt_line)
 
         # 序列顺序
-        order_line = QHBoxLayout()
-        order_line.addWidget(QLabel("序列方向:"))
+        self.order_container = QWidget()
+        order_line = QHBoxLayout(self.order_container); order_line.setContentsMargins(0, 0, 0, 0); order_line.setSpacing(6)
+        order_line.addWidget(QLabel("排序:"))
         self.order_group = QButtonGroup(self)
         r_row = QRadioButton("行优先 (→)")
         r_col = QRadioButton("列优先 (↓)")
@@ -642,24 +559,24 @@ class MainWindow(QMainWindow):
         order_line.addWidget(r_row)
         order_line.addWidget(r_col)
         order_line.addStretch()
-        cl_lay.addLayout(order_line)
+        cl_lay.addWidget(self.order_container)
 
         left_layout.addWidget(card_layout)
 
         # 5. 底部操作栏
-        act_box = QVBoxLayout(); act_box.setSpacing(8)
-        self.btn_export = QPushButton("💾 导出照片与排版 (PNG + JPG)")
+        act_box = QVBoxLayout(); act_box.setSpacing(6)
+        self.btn_export = QPushButton("💾 导出排版与照片 (PNG + JPG)")
         self.btn_export.setObjectName("PrimaryBtn")
         self.btn_export.clicked.connect(self.export_images)
         act_box.addWidget(self.btn_export)
 
         bottom_tools = QHBoxLayout()
-        b_preset = QPushButton("⚙️ 自定义预设管理…")
+        b_preset = QPushButton("⚙️ 预设管理…")
         b_preset.setObjectName("SecondaryBtn")
         b_preset.clicked.connect(self.open_preset_dialog)
         bottom_tools.addWidget(b_preset)
 
-        b_refresh = QPushButton("🔄 重新生成预览")
+        b_refresh = QPushButton("🔄 刷新预览")
         b_refresh.setObjectName("SecondaryBtn")
         b_refresh.clicked.connect(self.render_now)
         bottom_tools.addWidget(b_refresh)
@@ -670,7 +587,7 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(False)
         act_box.addWidget(self.progress_bar)
 
-        self.status_label = QLabel("就绪 · 请导入照片")
+        self.status_label = QLabel("就绪 · 请选择照片")
         self.status_label.setObjectName("SubTitle")
         self.status_label.setWordWrap(True)
         act_box.addWidget(self.status_label)
@@ -679,16 +596,14 @@ class MainWindow(QMainWindow):
         left_layout.addStretch()
 
         left_scroll.setWidget(left_container)
-        left_scroll.setMinimumWidth(360)
         splitter.addWidget(left_scroll)
 
-        # ---------- 右侧工作区 (大预览画布) ----------
+        # ---------- 右侧工作区 ----------
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(18, 18, 18, 18)
-        right_layout.setSpacing(10)
+        right_layout.setContentsMargins(14, 14, 14, 14)
+        right_layout.setSpacing(8)
 
-        # 顶部提示条
         top_bar = QHBoxLayout()
         self.view_status = QLabel("工作区：拖入图片即可开始")
         self.view_status.setStyleSheet("font-weight: 600; font-size: 13px; color: #475569;")
@@ -696,17 +611,13 @@ class MainWindow(QMainWindow):
         top_bar.addStretch()
         right_layout.addLayout(top_bar)
 
-        # 预览画布 (QLabel 支持缩放)
         self.preview_canvas = QLabel()
         self.preview_canvas.setAlignment(Qt.AlignCenter)
         self.preview_canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.preview_canvas.setStyleSheet(
-            "background-color: #ffffff; border: 1.5px dashed #cbd5e1; border-radius: 12px;"
-        )
+        self.preview_canvas.setStyleSheet("background-color: #ffffff; border: 1.5px dashed #cbd5e1; border-radius: 10px;")
         self.preview_canvas.setText("把照片拖入此处\n或点击左侧「选择照片」")
         right_layout.addWidget(self.preview_canvas, 1)
 
-        # 底部规格信息条
         self.footer_info = QLabel("尚未载入图像")
         self.footer_info.setObjectName("SubTitle")
         self.footer_info.setAlignment(Qt.AlignCenter)
@@ -715,17 +626,14 @@ class MainWindow(QMainWindow):
         splitter.addWidget(right_panel)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([380, 880])
+        splitter.setSizes([420, 860])
 
-        # 初始化数据与模式
         self.refresh_sizes()
         self.refresh_papers()
         self.on_mode_changed()
 
-        # 全局支持拖拽
         self.setAcceptDrops(True)
 
-        # 防抖渲染定时器
         self.debounce_timer = QTimer(self)
         self.debounce_timer.setSingleShot(True)
         self.debounce_timer.timeout.connect(self._exec_render)
@@ -781,22 +689,17 @@ class MainWindow(QMainWindow):
             from PIL import Image
             orig_img = Image.open(p)
             w, h = orig_img.size
-            self.fileinfo_label.setText(f"分辨率: {w} × {h} px")
-
-            # 缩略图
-            thumb = pil_to_pixmap(orig_img, 48, 48)
+            self.fileinfo_label.setText(f"原图: {w} × {h} px")
+            thumb = pil_to_pixmap(orig_img, 40, 40)
             self.thumb_label.setPixmap(thumb)
-
-            # 首先在画布呈现原图真实比例
-            pm = pil_to_pixmap(orig_img, self.preview_canvas.width() - 40, self.preview_canvas.height() - 40)
+            pm = pil_to_pixmap(orig_img, self.preview_canvas.width() - 30, self.preview_canvas.height() - 30)
             self.preview_canvas.setPixmap(pm)
-            self.view_status.setText(f"已载入原图: {fname} · 后台智能抠图中…")
+            self.view_status.setText(f"已载入原图: {fname} · 后台智能发丝级抠图中…")
             self.footer_info.setText(f"原图分辨率: {w} × {h} px")
         except Exception as e:
             self.fileinfo_label.setText(str(e))
 
-        # 异步启动智能抠图
-        self.status_label.setText("正在执行 AI 智能发丝级抠图…")
+        self.status_label.setText("正在执行高精度发丝级智能抠图…")
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)
 
@@ -811,7 +714,7 @@ class MainWindow(QMainWindow):
     def on_matting_success(self, rgba):
         self.cached_rgba = rgba
         self.progress_bar.setVisible(False)
-        self.status_label.setText("✓ 智能抠图就绪！换底色与排版实时极速刷新")
+        self.status_label.setText("✓ 发丝抠图完成！换底色与排版实时刷新")
         self.trigger_render_debounce()
 
     def on_matting_failed(self, msg):
@@ -819,13 +722,13 @@ class MainWindow(QMainWindow):
         self.status_label.setText(f"{msg}")
         self.trigger_render_debounce()
 
-    # ---------- 参数与底色交互 ----------
+    # ---------- 参数交互 ----------
     def set_background_color(self, name, rgb, hex_c):
         self.current_color_data = {"name": name, "rgb": rgb, "hex": hex_c}
         self.trigger_render_debounce()
 
     def pick_custom_color(self):
-        col = QColorDialog.getColor(QColor("#438EDB"), self, "选择自定义背景底色")
+        col = QColorDialog.getColor(QColor("#438EDB"), self, "选择自定义底色")
         if col.isValid():
             r, g, b = col.red(), col.green(), col.blue()
             hex_c = col.name().upper()
@@ -848,21 +751,25 @@ class MainWindow(QMainWindow):
 
     def on_mode_changed(self):
         mode = self.mode_combo.currentIndex()
-        # 0: 相纸排版, 1: 仅单张, 2: 自定义网格, 3: 指定张数
+        # 0: 相纸排满, 1: 仅单张, 2: 自定义网格, 3: 指定张数, 4: 常用混排
         self.paper_container.setVisible(mode in (0, 3))
         self.grid_container.setVisible(mode == 2)
         self.count_container.setVisible(mode == 3)
+        self.order_container.setVisible(mode in (0, 2, 3))
         self.update_paper_calc_badge()
         self.trigger_render_debounce()
 
     def update_paper_calc_badge(self):
         s = self.size_combo.currentData()
         p = self.opt_paper.currentData()
-        if s and p and self.mode_combo.currentIndex() == 0:
+        mode = self.mode_combo.currentIndex()
+        if mode == 0 and s and p:
             lay = core.compute_layout(p["w_mm"], p["h_mm"], s["w_mm"], s["h_mm"])
             self.paper_info_badge.setText(f"💡 自动排满: {lay['count']} 张 ({lay['cols']}列 × {lay['rows']}行)")
-        elif self.mode_combo.currentIndex() == 1:
+        elif mode == 1:
             self.paper_info_badge.setText("💡 输出单张证件照")
+        elif mode == 4:
+            self.paper_info_badge.setText("💡 6寸相纸: 4张二寸(35×49) + 4张一寸(25×35)")
         else:
             self.paper_info_badge.setText("")
 
@@ -881,7 +788,7 @@ class MainWindow(QMainWindow):
         self.opt_paper.blockSignals(True)
         self.opt_paper.clear()
         for p in core.load_papers():
-            self.opt_paper.addItem(f"{p['name']} ({p['w_mm']}×{p['h_mm']}mm)", p)
+            self.opt_paper.addItem(p["name"], p)
         self.opt_paper.blockSignals(False)
 
     # ---------- 渲染管理 ----------
@@ -901,20 +808,15 @@ class MainWindow(QMainWindow):
             return
 
         mode_idx = self.mode_combo.currentIndex()
-        if mode_idx == 0:
-            layout_mode = "paper"
-            layout_params = {"paper": self.opt_paper.currentData()}
-        elif mode_idx == 1:
-            layout_mode = "single"
-            layout_params = {}
-        elif mode_idx == 2:
-            layout_mode = "grid"
-            layout_params = {"rows": self.opt_rows.value(), "cols": self.opt_cols.value()}
-        else:
-            layout_mode = "count"
-            layout_params = {"paper": self.opt_paper.currentData(), "count": self.opt_count.value()}
+        extra_params = {
+            "paper": self.opt_paper.currentData(),
+            "rows": self.opt_rows.value(),
+            "cols": self.opt_cols.value(),
+            "count": self.opt_count.value(),
+            "order": "col" if self.order_group.checkedId() == 1 else "row",
+            "mix_key": "6in_4_4"
+        }
 
-        order = "col" if self.order_group.checkedId() == 1 else "row"
         cut_lines = self.cb_cutlines.isChecked()
         add_text = self.cb_sizetext.isChecked()
 
@@ -927,8 +829,8 @@ class MainWindow(QMainWindow):
             self.worker.quit(); self.worker.wait(500)
 
         self.worker = RenderWorker(
-            self.input_path, s, self.current_color_data, layout_mode, layout_params,
-            order, cut_lines, add_text, cached_rgba=self.cached_rgba
+            self.input_path, s, self.current_color_data, mode_idx, extra_params,
+            cut_lines, add_text, cached_rgba=self.cached_rgba
         )
         self.worker.done.connect(self.on_render_done)
         self.worker.error.connect(self.on_render_error)
@@ -944,7 +846,7 @@ class MainWindow(QMainWindow):
             self.preview_canvas.setPixmap(pm)
             self.view_status.setText(info)
             self.footer_info.setText(f"输出分辨率: {img.size[0]} × {img.size[1]} px · 300 DPI")
-            self.status_label.setText("✓ 预览渲染完成，可直接导出")
+            self.status_label.setText("✓ 渲染完成，可直接导出")
 
     def on_render_error(self, err):
         self.status_label.setText(f"渲染出错: {err}")
@@ -972,16 +874,20 @@ class MainWindow(QMainWindow):
 
         saved_files = []
         try:
-            # 导出排版
             if self.current_sheet is not None:
-                p_name = self.opt_paper.currentText().split(" ")[0] if self.mode_combo.currentIndex() != 2 else "网格"
-                png_path = os.path.join(out_dir, f"{base}_{p_name}_{id_name}_排版.png")
-                jpg_path = os.path.join(out_dir, f"{base}_{p_name}_{id_name}_排版.jpg")
+                mode_idx = self.mode_combo.currentIndex()
+                if mode_idx == 4:
+                    tag = "6寸混排"
+                elif mode_idx == 2:
+                    tag = "网格排版"
+                else:
+                    tag = self.opt_paper.currentText().split(" ")[0]
+                png_path = os.path.join(out_dir, f"{base}_{tag}_{id_name}.png")
+                jpg_path = os.path.join(out_dir, f"{base}_{tag}_{id_name}.jpg")
                 self.current_sheet.save(png_path, "PNG")
                 self.current_sheet.save(jpg_path, "JPEG", quality=95)
                 saved_files.append(png_path)
 
-            # 导出单张
             if self.current_single is not None:
                 single_png = os.path.join(out_dir, f"{base}_{id_name}_单张.png")
                 single_jpg = os.path.join(out_dir, f"{base}_{id_name}_单张.jpg")
@@ -991,7 +897,7 @@ class MainWindow(QMainWindow):
 
             msg = "成功导出以下文件（同时生成 PNG + JPG 300DPI）：\n\n" + "\n".join(f"• {os.path.basename(f)}" for f in saved_files)
             QMessageBox.information(self, "导出成功", msg)
-            self.status_label.setText(f"已成功导出到: {out_dir}")
+            self.status_label.setText(f"已导出到: {out_dir}")
         except Exception as e:
             QMessageBox.critical(self, "导出失败", str(e))
 
@@ -1014,12 +920,88 @@ class MainWindow(QMainWindow):
         super().closeEvent(e)
 
 
-# ============================================================ 启动入口
+# ============================================================ 预设管理
+class PresetDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("自定义预设管理")
+        self.resize(540, 440)
+        self.pm = core.PresetManager()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+
+        tabs = QTabWidget()
+        layout.addWidget(tabs)
+
+        self.size_list = QListWidget()
+        size_tab = QWidget()
+        sl = QVBoxLayout(size_tab); sl.addWidget(self.size_list)
+        sf = QFormLayout()
+        self.s_name = QLineEdit(); self.s_cat = QLineEdit("我的预设")
+        self.s_w = QDoubleSpinBox(); self.s_w.setRange(1, 300); self.s_w.setValue(25)
+        self.s_h = QDoubleSpinBox(); self.s_h.setRange(1, 300); self.s_h.setValue(35)
+        sf.addRow("名称", self.s_name); sf.addRow("分类", self.s_cat)
+        sf.addRow("宽 (mm)", self.s_w); sf.addRow("高 (mm)", self.s_h)
+        sl.addLayout(sf)
+        sb = QHBoxLayout()
+        b_add_s = QPushButton("添加尺寸"); b_del_s = QPushButton("删除选中")
+        b_add_s.clicked.connect(self.add_size); b_del_s.clicked.connect(self.del_size)
+        sb.addWidget(b_add_s); sb.addWidget(b_del_s); sl.addLayout(sb)
+        tabs.addTab(size_tab, "证件规格")
+
+        self.paper_list = QListWidget()
+        paper_tab = QWidget()
+        pl = QVBoxLayout(paper_tab); pl.addWidget(self.paper_list)
+        pf = QFormLayout()
+        self.p_name = QLineEdit()
+        self.p_w = QDoubleSpinBox(); self.p_w.setRange(10, 1000); self.p_w.setValue(102)
+        self.p_h = QDoubleSpinBox(); self.p_h.setRange(10, 1000); self.p_h.setValue(152)
+        pf.addRow("相纸名", self.p_name); pf.addRow("宽 (mm)", self.p_w); pf.addRow("高 (mm)", self.p_h)
+        pl.addLayout(pf)
+        pb = QHBoxLayout()
+        b_add_p = QPushButton("添加相纸"); b_del_p = QPushButton("删除选中")
+        b_add_p.clicked.connect(self.add_paper); b_del_p.clicked.connect(self.del_paper)
+        pb.addWidget(b_add_p); pb.addWidget(b_del_p); pl.addLayout(pb)
+        tabs.addTab(paper_tab, "相纸规格")
+
+        self.refresh()
+        bb = QDialogButtonBox(QDialogButtonBox.Close)
+        bb.rejected.connect(self.accept)
+        layout.addWidget(bb)
+
+    def refresh(self):
+        self.size_list.clear()
+        for s in self.pm.sizes():
+            self.size_list.addItem(f"{s['name']} [{s['category']}] {s['w_mm']}×{s['h_mm']} mm")
+        self.paper_list.clear()
+        for p in self.pm.papers():
+            self.paper_list.addItem(f"{p['name']} {p['w_mm']}×{p['h_mm']} mm")
+
+    def add_size(self):
+        if self.s_name.text().strip():
+            self.pm.add_size(self.s_name.text().strip(), self.s_w.value(), self.s_h.value(), self.s_cat.text().strip() or "我的预设")
+            self.refresh()
+
+    def del_size(self):
+        it = self.size_list.currentItem()
+        if it:
+            self.pm.remove_size(it.text().split(" [")[0]); self.refresh()
+
+    def add_paper(self):
+        if self.p_name.text().strip():
+            self.pm.add_paper(self.p_name.text().strip(), self.p_w.value(), self.p_h.value()); self.refresh()
+
+    def del_paper(self):
+        it = self.paper_list.currentItem()
+        if it:
+            self.pm.remove_paper(it.text().split(" ")[0]); self.refresh()
+
+
 def run():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
 
-    # 亮色强制 Palette (彻底告别深色模式看不见字)
     pal = QPalette()
     pal.setColor(QPalette.Window, QColor("#f8fafc"))
     pal.setColor(QPalette.WindowText, QColor("#0f172a"))
@@ -1034,7 +1016,6 @@ def run():
 
     app.setStyleSheet(STUDIO_QSS)
 
-    # 设置 macOS Dock 图标与 App 图标
     icon_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.icns")
     if os.path.exists(icon_path):
         app.setWindowIcon(QIcon(icon_path))

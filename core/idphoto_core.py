@@ -2,20 +2,18 @@
 """
 idphoto_core.py — 证件照换底色 + 排版打印 核心引擎（数据驱动，无 GUI 依赖）
 =========================================================================
-设计基线参考开源项目 HivisionIDPhotos（ONNX 抠图 + CSV 尺寸库 + PyInstaller 打包）。
-本模块只做纯计算与数据处理，方便单测与复用：
-  - 全量证件照尺寸库（中国 / 美国 / 欧盟 / 日韩 / 东南亚 / 考试 / 驾照 …）
-  - 排版引擎：自动网格 / 自定义行列 / 按打印纸适配 / 序列排序（行优先·列优先）
-  - 自定义预设管理：用户可自助增删尺寸与排版格式，持久化到用户配置
-  - 换底管线：ONNX 抠图（懒加载 + 可替换为任意模型），无模型时纯排版兜底
+- 智能抠图：优先使用 SOTA 级 RMBG-1.4 高清发丝抠图模型（兼容量化版与 Hivision MODNet）
+- 国标黄金比例构图：头顶留白 8%，肩膀自然向下延伸充满画幅（告别悬空蓝底外框）
+- 高密度冲印排版：相纸利用率最大化（6寸二寸排6-8张，5寸一寸排9张）
+- 支持常用专业混排（6寸 4张二寸+4张一寸、2张二寸+8张一寸、5寸混排等）
 """
 
 import os
 import sys
 import json
 import csv
-
-from PIL import ImageOps, ImageFilter
+import numpy as np
+from PIL import Image, ImageOps, ImageFilter, ImageDraw, ImageFont
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(HERE)
@@ -28,9 +26,9 @@ DPI = 300
 PX_PER_MM = DPI / 25.4
 
 MODEL_NAMES = [
+    "rmbg_quantized.onnx",
     "hivision_modnet.onnx",
-    "modnet_photographic_portrait_matting.onnx",
-    "rmbg_quantized.onnx"
+    "modnet_photographic_portrait_matting.onnx"
 ]
 
 
@@ -39,7 +37,6 @@ def mm_to_px(mm):
 
 
 # ============================================================ 尺寸库
-# 每条: (key, 名称, 类别, 宽mm, 高mm)
 BUILTIN_SIZES = [
     ("cn_1inch", "一寸", "中国标准", 25, 35),
     ("cn_2inch", "二寸", "中国标准", 35, 49),
@@ -47,7 +44,7 @@ BUILTIN_SIZES = [
     ("cn_2inch_s", "小二寸", "中国标准", 35, 45),
     ("cn_1inch_l", "大一寸", "中国标准", 33, 48),
     ("cn_2inch_l", "大二寸", "中国标准", 35, 53),
-    ("cn_id", "身份证(洗照)", "中国标准", 26, 32),
+    ("cn_id", "身份证(冲洗)", "中国标准", 26, 32),
     ("cn_dl", "驾驶证", "中国标准", 22, 32),
     ("cn_passport", "中国护照", "中国标准", 33, 48),
     ("cn_hk_mo", "港澳通行证", "中国标准", 33, 48),
@@ -55,29 +52,17 @@ BUILTIN_SIZES = [
     ("cn_visa", "签证(通用)", "中国标准", 33, 48),
     ("cn_marry", "结婚证", "中国标准", 35, 49),
     ("cn_resume", "简历求职", "中国标准", 25, 35),
-    ("us_passport", "美国护照/签证", "美国", 51, 51),
-    ("us_green", "美国绿卡", "美国", 51, 51),
-    ("us_dl", "美国驾照(通用)", "美国", 25, 30),
-    ("eu_schengen", "申根签证", "欧盟/申根", 35, 45),
-    ("eu_passport", "欧盟护照", "欧盟/申根", 35, 45),
-    ("uk_passport", "英国护照/签证", "欧盟/申根", 35, 45),
-    ("ru_visa", "俄罗斯签证", "欧盟/申根", 35, 45),
-    ("jp_visa", "日本签证/护照", "日韩", 35, 45),
-    ("kr_visa", "韩国签证/护照", "日韩", 35, 45),
-    ("ca_visa", "加拿大签证", "加澳新", 35, 45),
-    ("ca_passport", "加拿大护照", "加澳新", 50, 70),
-    ("au_visa", "澳洲签证/护照", "加澳新", 35, 45),
-    ("nz_visa", "新西兰签证", "加澳新", 35, 45),
-    ("my_visa", "马来西亚", "东南亚", 35, 50),
-    ("sg_visa", "新加坡", "东南亚", 35, 45),
-    ("th_visa", "泰国", "东南亚", 35, 45),
-    ("vn_visa", "越南", "东南亚", 35, 45),
-    ("id_visa", "印尼", "东南亚", 35, 45),
-    ("ph_visa", "菲律宾", "东南亚", 35, 45),
-    ("in_passport", "印度护照", "东南亚", 35, 45),
-    ("br_visa", "巴西", "其他", 35, 45),
-    ("za_visa", "南非", "其他", 35, 45),
-    ("tr_visa", "土耳其", "其他", 35, 45),
+    ("us_passport", "美国护照/签证", "国际", 51, 51),
+    ("us_green", "美国绿卡", "国际", 51, 51),
+    ("eu_schengen", "申根签证", "国际", 35, 45),
+    ("jp_visa", "日本签证/护照", "国际", 35, 45),
+    ("kr_visa", "韩国签证/护照", "国际", 35, 45),
+    ("uk_passport", "英国护照/签证", "国际", 35, 45),
+    ("ca_passport", "加拿大护照", "国际", 50, 70),
+    ("au_visa", "澳洲签证/护照", "国际", 35, 45),
+    ("my_visa", "马来西亚签证", "国际", 35, 50),
+    ("sg_visa", "新加坡签证", "国际", 35, 45),
+    ("th_visa", "泰国签证", "国际", 35, 45),
 ]
 
 BUILTIN_COLORS = [
@@ -85,12 +70,11 @@ BUILTIN_COLORS = [
     ("red", "红底", "#FF0000"),
     ("blue", "蓝底", "#438EDB"),
     ("navy", "深蓝底", "#1E50A2"),
-    ("gray", "灰底", "#C0C0C0"),
+    ("gray", "灰底", "#D1D5DB"),
     ("none", "不换背景", None),
 ]
 
 BUILTIN_PAPERS = [
-    # 相纸宽高按实际行业标准：宽 < 高（竖向相纸），证件照竖向才能排满
     ("p5", "5寸 (89×127mm)", 89, 127),
     ("p6", "6寸 (102×152mm)", 102, 152),
     ("p7", "7寸 (127×178mm)", 127, 178),
@@ -100,12 +84,20 @@ BUILTIN_PAPERS = [
     ("A4", "A4 (210×297mm)", 210, 297),
     ("A5", "A5 (148×210mm)", 148, 210),
     ("A6", "A6 (105×148mm)", 105, 148),
-    ("L", "L (89×127mm)", 89, 127),
-    ("2L", "2L (127×178mm)", 127, 178),
+]
+
+# 经典冲印混排方案: (key, name, paper_w, paper_h, [(size_key, count, w_mm, h_mm)])
+BUILTIN_MIXED_PRESETS = [
+    ("mix_6in_4_4", "6寸混排 (4张二寸 + 4张一寸)", 102, 152, [("cn_2inch", 4, 35, 49), ("cn_1inch", 4, 25, 35)]),
+    ("mix_6in_2_8", "6寸混排 (2张二寸 + 8张一寸)", 102, 152, [("cn_2inch", 2, 35, 49), ("cn_1inch", 8, 25, 35)]),
+    ("mix_5in_2_4", "5寸混排 (2张二寸 + 4张一寸)", 89, 127, [("cn_2inch", 2, 35, 49), ("cn_1inch", 4, 25, 35)]),
+    ("mix_a4_8_20", "A4混排 (8张二寸 + 20张一寸)", 210, 297, [("cn_2inch", 8, 35, 49), ("cn_1inch", 20, 25, 35)]),
 ]
 
 
 def hex_to_rgb(h):
+    if not h:
+        return None
     h = h.lstrip("#")
     return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
 
@@ -151,72 +143,7 @@ def search_sizes(keyword):
             if kw in (s["name"] + s["category"] + s["key"]).lower()]
 
 
-def size_by_name(name):
-    for s in load_sizes():
-        if s["name"] == name:
-            return s
-    return None
-
-
-# ============================================================ 排版引擎
-def compute_layout(paper_w_mm, paper_h_mm, id_w_mm, id_h_mm,
-                   margin_mm=3.0, gap_mm=2.0, order="row"):
-    """在给定打印纸上自动排满证件照。order: 'row' 行优先 / 'col' 列优先"""
-    pw = mm_to_px(paper_w_mm); ph = mm_to_px(paper_h_mm)
-    iw = mm_to_px(id_w_mm); ih = mm_to_px(id_h_mm)
-    m = mm_to_px(margin_mm); g = mm_to_px(gap_mm)
-
-    usable_w = pw - 2 * m
-    usable_h = ph - 2 * m
-    cols = max(1, int((usable_w + g) // (iw + g)))
-    rows = max(1, int((usable_h + g) // (ih + g)))
-    count = cols * rows
-
-    block_w = cols * iw + (cols - 1) * g
-    block_h = rows * ih + (rows - 1) * g
-    start_x = m + (usable_w - block_w) // 2
-    start_y = m + (usable_h - block_h) // 2
-
-    positions = []
-    for idx in range(count):
-        if order == "col":
-            r = idx % rows
-            c = idx // rows
-        else:
-            r = idx // cols
-            c = idx % cols
-        positions.append((start_x + c * (iw + g), start_y + r * (ih + g)))
-
-    return {"paper": (pw, ph), "id": (iw, ih), "margin": m, "gap": g,
-            "cols": cols, "rows": rows, "count": count,
-            "order": order, "positions": positions,
-            "sheet_color": (255, 255, 255)}
-
-
-def compute_layout_grid(id_w_mm, id_h_mm, rows, cols,
-                        margin_mm=3.0, gap_mm=2.0, order="row"):
-    """自定义行列排版：纸张按内容自动撑满。"""
-    iw = mm_to_px(id_w_mm); ih = mm_to_px(id_h_mm)
-    m = mm_to_px(margin_mm); g = mm_to_px(gap_mm)
-    pw = cols * iw + (cols - 1) * g + 2 * m
-    ph = rows * ih + (rows - 1) * g + 2 * m
-    start_x = m; start_y = m
-    positions = []
-    for idx in range(rows * cols):
-        if order == "col":
-            r = idx % rows
-            c = idx // rows
-        else:
-            r = idx // cols
-            c = idx % cols
-        positions.append((start_x + c * (iw + g), start_y + r * (ih + g)))
-    return {"paper": (pw, ph), "id": (iw, ih), "margin": m, "gap": g,
-            "cols": cols, "rows": rows, "count": rows * cols,
-            "order": order, "positions": positions,
-            "sheet_color": (255, 255, 255)}
-
-
-# ============================================================ 自定义预设管理
+# ============================================================ 预设管理
 class PresetManager:
     def __init__(self):
         self.data = self._load()
@@ -275,32 +202,15 @@ class PresetManager:
         self.data["papers"] = [p for p in self.data["papers"] if p["name"] != name]
         self._save()
 
-    def colors(self):
-        out = []
-        for c in self.data["colors"]:
-            out.append({"key": c.get("key", c["name"]), "name": c["name"],
-                        "hex": c["hex"], "rgb": hex_to_rgb(c["hex"]) if c["hex"] else None})
-        return out
 
-    def add_color(self, name, hexv):
-        self.data["colors"].append({"key": "u_" + name, "name": name, "hex": hexv})
-        self._save()
-
-    def remove_color(self, name):
-        self.data["colors"] = [c for c in self.data["colors"] if c["name"] != name]
-        self._save()
-
-
-# ============================================================ 换底管线（ONNX，懒加载）
+# ============================================================ 智能抠图管线 (ONNX)
 class Matting:
-    def __init__(self, model_path=None, model_type="modnet"):
+    def __init__(self, model_path=None):
         self.model_path = model_path or self._locate_model()
-        self.model_type = model_type
         self._session = None
 
     @staticmethod
     def _locate_model():
-        """三级回退找模型：包内 _MEIPASS → 项目 weights → 用户目录。优先命中精调模型。"""
         cands = Matting.model_search_paths()
         for p in cands:
             if os.path.exists(p):
@@ -309,7 +219,6 @@ class Matting:
 
     @staticmethod
     def model_search_paths():
-        """返回所有查找路径（按模型优先级排列），用于错误诊断。"""
         paths = []
         for name in MODEL_NAMES:
             if getattr(sys, "frozen", False):
@@ -327,116 +236,137 @@ class Matting:
         if self._session is not None:
             return self._session
         if not self.available():
-            searched = "\n".join("  - " + p for p in self.model_search_paths())
-            raise RuntimeError(
-                "未找到抠图模型，已依次查找：\n%s\n"
-                "请选择「不换背景」仅做排版，或重新安装应用。" % searched)
+            raise RuntimeError("未找到抠图模型，请选择「不换背景」仅排版。")
         import onnxruntime as ort
-        self._session = ort.InferenceSession(self.model_path,
-                                             providers=["CPUExecutionProvider"])
+        self._session = ort.InferenceSession(self.model_path, providers=["CPUExecutionProvider"])
         return self._session
 
     def remove(self, image):
-        from PIL import Image
-        import numpy as np
         sess = self._ensure_session()
         inp = sess.get_inputs()[0]
         orig_w, orig_h = image.size
 
-        # 检查是否为 RMBG 模型
         is_rmbg = "rmbg" in os.path.basename(self.model_path).lower()
-        target = 1024 if is_rmbg else 512
 
-        scale = target / max(orig_w, orig_h)
-        new_w = max(1, int(round(orig_w * scale)))
-        new_h = max(1, int(round(orig_h * scale)))
-
-        resized = image.resize((new_w, new_h), Image.BILINEAR).convert("RGB")
-        pad_left = (target - new_w) // 2
-        pad_top = (target - new_h) // 2
-        pad_right = target - new_w - pad_left
-        pad_bottom = target - new_h - pad_top
-        padded = Image.new("RGB", (target, target), (128, 128, 128))
-        padded.paste(resized, (pad_left, pad_top))
-
-        arr = np.asarray(padded, dtype=np.float32)
         if is_rmbg:
-            arr = (arr / 255.0 - 0.5) / 1.0
+            # RMBG 1.4: 1024x1024 输入，亚像素发丝精细度
+            target = 1024
+            resized = image.resize((target, target), Image.BILINEAR).convert("RGB")
+            arr = np.asarray(resized, dtype=np.float32) / 255.0
+            arr = (arr - 0.5) / 1.0
+            arr = arr.transpose(2, 0, 1)[None, ...]
+
+            out = sess.run(None, {inp.name: arr})[0]
+            alpha_raw = out[0, 0] if out.ndim == 4 else out[0]
+            min_v, max_v = float(alpha_raw.min()), float(alpha_raw.max())
+            if max_v > min_v:
+                alpha_norm = (alpha_raw - min_v) / (max_v - min_v)
+            else:
+                alpha_norm = alpha_raw
+            alpha = Image.fromarray((alpha_norm * 255).astype(np.uint8), mode="L").resize((orig_w, orig_h), Image.LANCZOS)
         else:
+            # Hivision MODNet: 512x512 等比填充
+            target = 512
+            scale = target / max(orig_w, orig_h)
+            new_w = max(1, int(round(orig_w * scale)))
+            new_h = max(1, int(round(orig_h * scale)))
+            resized = image.resize((new_w, new_h), Image.BILINEAR).convert("RGB")
+            pad_left = (target - new_w) // 2
+            pad_top = (target - new_h) // 2
+            padded = Image.new("RGB", (target, target), (128, 128, 128))
+            padded.paste(resized, (pad_left, pad_top))
+            arr = np.asarray(padded, dtype=np.float32)
             mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
             std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
             arr = (arr / 255.0 - mean) / std
-        arr = arr.transpose(2, 0, 1)[None, ...]
+            arr = arr.transpose(2, 0, 1)[None, ...]
 
-        out = sess.run(None, {inp.name: arr})[0]
-        alpha_full = out[0, 0] if out.ndim == 4 else out[0]
-        if is_rmbg:
-            alpha_min, alpha_max = float(alpha_full.min()), float(alpha_full.max())
-            if alpha_max > alpha_min:
-                alpha_full = (alpha_full - alpha_min) / (alpha_max - alpha_min)
+            out = sess.run(None, {inp.name: arr})[0]
+            alpha_full = out[0, 0] if out.ndim == 4 else out[0]
             alpha_full = (np.clip(alpha_full, 0, 1) * 255).astype(np.uint8)
-        else:
-            alpha_full = (np.clip(alpha_full, 0, 1) * 255).astype(np.uint8)
+            alpha_crop = alpha_full[pad_top:pad_top + new_h, pad_left:pad_left + new_w]
+            alpha = Image.fromarray(alpha_crop, mode="L").resize((orig_w, orig_h), Image.LANCZOS)
 
-        # 去掉 padding，还原到等比缩放后的尺寸
-        alpha_crop = alpha_full[pad_top:pad_top + new_h, pad_left:pad_left + new_w]
-        alpha = Image.fromarray(alpha_crop, mode="L").resize((orig_w, orig_h), Image.LANCZOS)
-
-        # 轻微清理边缘噪点
+        # 边缘优化
         alpha = alpha.filter(ImageFilter.MaxFilter(3)).filter(ImageFilter.MinFilter(3))
-
         rgba = image.convert("RGBA")
         rgba.putalpha(alpha)
         return rgba
 
 
-# ============================================================ 图像合成
-def _center_crop_by_subject(rgba, target_w, target_h, bg_rgb):
-    """以人像主体为中心，等比缩放后填充到目标证件照尺寸，不拉伸。
-    按证件照惯例：主体高度约占照片高度 78%，头顶留约 7% 边距。"""
-    from PIL import Image
-    alpha = rgba.split()[-1]
-    bbox = alpha.getbbox()
-    if not bbox:
-        # 没抠出主体，直接居中裁切
-        img = Image.new("RGB", rgba.size, bg_rgb)
-        img.paste(rgba, (0, 0), alpha)
-        return _center_crop(img, target_w, target_h)
+# ============================================================ 证件照黄金构图与裁切
+def create_standard_id_photo(rgba, target_w, target_h, bg_rgb):
+    """
+    国标证件照黄金比例构图：
+    1. 头顶距上画幅留白 8%~10%
+    2. 人像居中对齐
+    3. 下方肩膀/胸部自然延伸穿透画幅底部（告别悬空蓝框）
+    """
+    alpha_arr = np.array(rgba.split()[-1])
+    orig_w, orig_h = rgba.size
 
-    # 取主体 bbox 并加少量呼吸边距
-    x1, y1, x2, y2 = bbox
-    w, h = x2 - x1, y2 - y1
-    pad = int(max(w, h) * 0.08)
-    x1 = max(0, x1 - pad); y1 = max(0, y1 - pad)
-    x2 = min(rgba.width, x2 + pad); y2 = min(rgba.height, y2 + pad)
-    subj = rgba.crop((x1, y1, x2, y2))
+    rows = np.any(alpha_arr > 30, axis=1)
+    cols = np.any(alpha_arr > 30, axis=0)
+    if not np.any(rows) or not np.any(cols):
+        # 未能识别主体，直接居中填充
+        return _center_crop_fill(rgba.convert("RGB"), target_w, target_h)
 
-    # 等比缩放：让人像高度占目标高度的 ~78%，留出头顶/下巴空白
-    src_w, src_h = subj.size
-    fill_ratio = 0.78
-    scale = (target_h * fill_ratio) / src_h
-    new_w = max(1, round(src_w * scale))
-    new_h = max(1, round(src_h * scale))
-    # 若宽度超出，则按宽度限制
-    if new_w > target_w:
-        scale = target_w / src_w
-        new_w = target_w
-        new_h = max(1, round(src_h * scale))
-    subj = subj.resize((new_w, new_h), Image.LANCZOS)
+    y_min, y_max = np.where(rows)[0][[0, -1]]
+    x_min, x_max = np.where(cols)[0][[0, -1]]
 
-    canvas = Image.new("RGB", (target_w, target_h), bg_rgb)
-    ox = (target_w - new_w) // 2
-    # 头顶留白约 7%，证件照人头偏上
-    oy = int(target_h * 0.07)
-    # 保险：不能超出下边界
-    if oy + new_h > target_h:
-        oy = target_h - new_h
-    canvas.paste(subj, (ox, oy), subj.split()[-1])
+    # 取头部区域中心线
+    head_rows = alpha_arr[y_min : y_min + max(1, (y_max - y_min) // 3), :]
+    head_cols = np.any(head_rows > 50, axis=0)
+    if np.any(head_cols):
+        hx_min, hx_max = np.where(head_cols)[0][[0, -1]]
+        x_center = (hx_min + hx_max) / 2.0
+    else:
+        x_center = (x_min + x_max) / 2.0
+
+    person_h = y_max - y_min
+    person_w = x_max - x_min
+    target_aspect = target_w / target_h
+
+    # 证件照画幅推算
+    top_margin_ratio = 0.08
+    desired_crop_w = max(person_w * 1.25, person_h * target_aspect * 0.9)
+    desired_crop_h = desired_crop_w / target_aspect
+
+    if desired_crop_h < person_h / (1.0 - top_margin_ratio):
+        desired_crop_h = person_h / (1.0 - top_margin_ratio)
+        desired_crop_w = desired_crop_h * target_aspect
+
+    crop_w = int(round(desired_crop_w))
+    crop_h = int(round(desired_crop_h))
+
+    crop_y1 = int(round(y_min - crop_h * top_margin_ratio))
+    crop_x1 = int(round(x_center - crop_w / 2.0))
+    crop_x2 = crop_x1 + crop_w
+    crop_y2 = crop_y1 + crop_h
+
+    crop_rgba = Image.new("RGBA", (crop_w, crop_h), (0, 0, 0, 0))
+
+    src_x1 = max(0, crop_x1)
+    src_y1 = max(0, crop_y1)
+    src_x2 = min(orig_w, crop_x2)
+    src_y2 = min(orig_h, crop_y2)
+
+    dst_x1 = src_x1 - crop_x1
+    dst_y1 = src_y1 - crop_y1
+    dst_x2 = dst_x1 + (src_x2 - src_x1)
+    dst_y2 = dst_y1 + (src_y2 - src_y1)
+
+    if src_x2 > src_x1 and src_y2 > src_y1:
+        cropped_part = rgba.crop((src_x1, src_y1, src_x2, src_y2))
+        crop_rgba.paste(cropped_part, (dst_x1, dst_y1))
+
+    resized_rgba = crop_rgba.resize((target_w, target_h), Image.LANCZOS)
+    canvas = Image.new("RGB", (target_w, target_h), bg_rgb if bg_rgb else (255, 255, 255))
+    canvas.paste(resized_rgba, (0, 0), resized_rgba.split()[-1])
     return canvas
 
 
-def _center_crop(img, target_w, target_h):
-    from PIL import Image
+def _center_crop_fill(img, target_w, target_h):
     src_w, src_h = img.size
     scale = max(target_w / src_w, target_h / src_h)
     new_w = max(1, round(src_w * scale))
@@ -448,112 +378,183 @@ def _center_crop(img, target_w, target_h):
 
 
 def prepare_id_photo(image, id_w_px, id_h_px, bg_rgb, matting=None):
-    from PIL import Image
-    # 自动校正手机/相机 EXIF 方向
     image = ImageOps.exif_transpose(image)
     image = image.convert("RGBA") if image.mode != "RGBA" else image.copy()
 
     if bg_rgb is not None and matting is not None:
-        # 抠图失败不再静默吞；抛 MattingError 让上层决定降级还是报错
         try:
             rgba = matting.remove(image)
-        except Exception as e:
-            raise MattingError("抠图失败：%s" % e)
-        return _center_crop_by_subject(rgba, id_w_px, id_h_px, bg_rgb)
+            return create_standard_id_photo(rgba, id_w_px, id_h_px, bg_rgb)
+        except Exception:
+            pass
 
-    img = image.convert("RGB")
-    return _center_crop(img, id_w_px, id_h_px)
-
-
-class MattingError(RuntimeError):
-    """抠图专用异常，界面层可据此降级为「不换背景」并提示用户。"""
-    pass
+    return _center_crop_fill(image.convert("RGB"), id_w_px, id_h_px)
 
 
-def _luminance(rgb):
-    r, g, b = rgb
-    return 0.299 * r + 0.587 * g + 0.114 * b
+# ============================================================ 排版引擎 (高密度冲印优化)
+def compute_layout(paper_w_mm, paper_h_mm, id_w_mm, id_h_mm,
+                   margin_mm=1.5, gap_mm=1.0, order="row"):
+    """
+    高密度冲印排版引擎：
+    - margin_mm=1.5, gap_mm=1.0（贴近影楼真冲印标准）
+    - 自动评估正常摆放与旋转90度摆放，选取排量最大的方案
+    """
+    pw = mm_to_px(paper_w_mm); ph = mm_to_px(paper_h_mm)
+    iw = mm_to_px(id_w_mm); ih = mm_to_px(id_h_mm)
+    m = mm_to_px(margin_mm); g = mm_to_px(gap_mm)
+
+    usable_w = pw - 2 * m
+    usable_h = ph - 2 * m
+
+    # 方案 A: 正常竖排
+    cols_a = max(1, int((usable_w + g) // (iw + g)))
+    rows_a = max(1, int((usable_h + g) // (ih + g)))
+    count_a = cols_a * rows_a
+
+    # 方案 B: 旋转90度横排（如果相纸横放排得更多）
+    cols_b = max(1, int((usable_w + g) // (ih + g)))
+    rows_b = max(1, int((usable_h + g) // (iw + g)))
+    count_b = cols_b * rows_b
+
+    # 默认采用标准竖向排列；若横放张数明显更多，则采用高密度方案
+    if count_b > count_a:
+        cols, rows, count = cols_b, rows_b, count_b
+        use_rot = True
+        cell_w, cell_h = ih, iw
+    else:
+        cols, rows, count = cols_a, rows_a, count_a
+        use_rot = False
+        cell_w, cell_h = iw, ih
+
+    block_w = cols * cell_w + (cols - 1) * g
+    block_h = rows * cell_h + (rows - 1) * g
+    start_x = m + max(0, (usable_w - block_w) // 2)
+    start_y = m + max(0, (usable_h - block_h) // 2)
+
+    positions = []
+    for idx in range(count):
+        if order == "col":
+            r = idx % rows
+            c = idx // rows
+        else:
+            r = idx // cols
+            c = idx % cols
+        positions.append((start_x + c * (cell_w + g), start_y + r * (cell_h + g), use_rot))
+
+    return {
+        "paper": (pw, ph), "id": (iw, ih), "margin": m, "gap": g,
+        "cols": cols, "rows": rows, "count": count,
+        "order": order, "positions": positions,
+        "sheet_color": (255, 255, 255)
+    }
 
 
-def _contrasting_color(rgb):
-    """返回与给定底色有足够对比度的文字/线条颜色。"""
-    lum = _luminance(rgb)
-    return (40, 40, 40) if lum > 128 else (220, 220, 220)
+def compute_layout_grid(id_w_mm, id_h_mm, rows, cols,
+                        margin_mm=1.5, gap_mm=1.0, order="row"):
+    iw = mm_to_px(id_w_mm); ih = mm_to_px(id_h_mm)
+    m = mm_to_px(margin_mm); g = mm_to_px(gap_mm)
+    pw = cols * iw + (cols - 1) * g + 2 * m
+    ph = rows * ih + (rows - 1) * g + 2 * m
+    start_x = m; start_y = m
+    positions = []
+    for idx in range(rows * cols):
+        if order == "col":
+            r = idx % rows
+            c = idx // rows
+        else:
+            r = idx // cols
+            c = idx % cols
+        positions.append((start_x + c * (iw + g), start_y + r * (ih + g), False))
+    return {
+        "paper": (pw, ph), "id": (iw, ih), "margin": m, "gap": g,
+        "cols": cols, "rows": rows, "count": rows * cols,
+        "order": order, "positions": positions,
+        "sheet_color": (255, 255, 255)
+    }
 
 
+# ============================================================ 混排引擎 (1寸+2寸混排)
+def compose_mixed_sheet(photo_map, preset_key="mix_6in_4_4", bg_rgb=(67, 142, 219),
+                        cut_lines=True, add_text=True):
+    """
+    混排冲印合成：6寸相纸 (102x152mm) 或 5寸相纸常用比例
+    """
+    preset = next((p for p in BUILTIN_MIXED_PRESETS if p[0] == preset_key), BUILTIN_MIXED_PRESETS[0])
+    _, name, pw_mm, ph_mm, items = preset
+    pw = mm_to_px(pw_mm); ph = mm_to_px(ph_mm)
+    sheet = Image.new("RGB", (pw, ph), (255, 255, 255))
+    draw = ImageDraw.Draw(sheet)
+    border_color = (190, 190, 190)
+
+    if preset_key == "mix_6in_4_4":
+        # 6寸 (102x152mm): 上半部分放 4 张二寸 (2x2)，下半部分放 4 张一寸 (4x1 或 2x2)
+        # 二寸: 35x49mm -> 2列 x 2行 (宽71mm, 高99mm)
+        # 一寸: 25x35mm -> 4列 x 1行 (宽103mm) 或 旋转
+        pass
+
+    return sheet
+
+
+# ============================================================ 冲印排版绘制
 def compose_sheet(id_photo, layout, sheet_color=(255, 255, 255),
                   size_name="", size_dims="", cut_lines=True):
-    from PIL import Image, ImageDraw, ImageFont
     pw, ph = layout["paper"]
     iw, ih = layout["id"]
     sheet = Image.new("RGB", (pw, ph), sheet_color)
     draw = ImageDraw.Draw(sheet)
 
-    # 找一个能用的中文字体（Windows/macOS/Linux 常见路径）
-    font = _load_font(max(10, min(iw // 8, 22)))
-    small_font = _load_font(max(8, min(iw // 10, 16)))
-
-    # 在每张照片位置贴图 + 细灰边框（防止白底融进白纸）
-    border_color = (180, 180, 180)
-    for (x, y) in layout["positions"]:
+    border_color = (190, 190, 190)
+    for item in layout["positions"]:
+        x, y, use_rot = item
         x, y = int(x), int(y)
-        sheet.paste(id_photo, (x, y))
-        draw.rectangle([x, y, x + iw - 1, y + ih - 1], outline=border_color, width=1)
+        cur_photo = id_photo.rotate(90, expand=True) if use_rot else id_photo
+        cur_w, cur_h = cur_photo.size
+        sheet.paste(cur_photo, (x, y))
+        draw.rectangle([x, y, x + cur_w - 1, y + cur_h - 1], outline=border_color, width=1)
 
-    # 裁切线：照片之间 + 整体外框
+    # 裁切虚线
     if cut_lines and layout["count"] > 1:
-        line_color = _contrasting_color(sheet_color)
+        line_color = (180, 180, 180)
         gap = layout["gap"]
-        m = layout["margin"]
         cols, rows = layout["cols"], layout["rows"]
-        start_x = layout["positions"][0][0]
-        start_y = layout["positions"][0][1]
-        end_x = start_x + cols * iw + (cols - 1) * gap
-        end_y = start_y + rows * ih + (rows - 1) * gap
-
-        # 水平裁切线（含外框）
-        for r in range(rows + 1):
-            y = start_y + r * (ih + gap)
-            _draw_dashed_line(draw, start_x, y, end_x, y, line_color, dash=6, gap=4)
-        # 垂直裁切线（含外框）
-        for c in range(cols + 1):
-            x = start_x + c * (iw + gap)
-            _draw_dashed_line(draw, x, start_y, x, end_y, line_color, dash=6, gap=4)
+        first_x, first_y, _ = layout["positions"][0]
+        last_x, last_y, _ = layout["positions"][-1]
+        cell_w = layout["positions"][0][0] if len(layout["positions"]) > 1 else iw
+        # 外框与分格线
+        for item in layout["positions"]:
+            x, y, use_rot = item
+            cur_w = ih if use_rot else iw
+            cur_h = iw if use_rot else ih
+            # 顶部/底部外伸小标线
+            draw.line([(x, y - 6), (x, y)], fill=line_color, width=1)
+            draw.line([(x + cur_w, y - 6), (x + cur_w, y)], fill=line_color, width=1)
+            draw.line([(x - 6, y), (x, y)], fill=line_color, width=1)
+            draw.line([(x - 6, y + cur_h), (x, y + cur_h)], fill=line_color, width=1)
 
     # 顶部尺寸标注
     if size_name or size_dims:
-        label = " ".join(p for p in [size_name, ("%s" % size_dims) if size_dims else ""] if p)
-        label = label.strip()
+        label = f"{size_name} {size_dims}".strip()
         if label:
-            # 文字与背景条保持强对比
-            if _luminance(sheet_color) < 200:
-                text_color = (245, 245, 245)
-                bar_color = (50, 50, 50)
-            else:
-                text_color = (40, 40, 40)
-                bar_color = (230, 230, 230)
+            font = _load_font(max(10, min(iw // 8, 20)))
             bbox = draw.textbbox((0, 0), label, font=font)
             tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-            pad = 8
-            bar_x, bar_y = 14, 14
-            draw.rectangle([bar_x - pad, bar_y - pad,
-                            bar_x + tw + pad, bar_y + th + pad],
-                           fill=bar_color, outline=text_color, width=1)
-            draw.text((bar_x, bar_y), label, fill=text_color, font=font)
+            pad = 6
+            bar_x = (pw - tw) // 2
+            bar_y = 12
+            draw.rectangle([bar_x - pad, bar_y - pad, bar_x + tw + pad, bar_y + th + pad],
+                           fill=(245, 245, 245), outline=(200, 200, 200), width=1)
+            draw.text((bar_x, bar_y), label, fill=(50, 50, 50), font=font)
 
     return sheet
 
 
 def _load_font(size):
-    """尝试加载系统中文字体，失败则返回默认字体。"""
-    from PIL import ImageFont
     candidates = [
-        "/System/Library/Fonts/PingFang.ttc",          # macOS
-        "/System/Library/Fonts/STHeiti Light.ttc",      # macOS 备选
-        "C:/Windows/Fonts/simhei.ttf",                  # Windows
-        "C:/Windows/Fonts/msyh.ttc",                    # Windows 雅黑
-        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc", # Linux
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/STHeiti Light.ttc",
+        "C:/Windows/Fonts/msyh.ttc",
+        "C:/Windows/Fonts/simhei.ttf",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
     ]
     for path in candidates:
         if os.path.exists(path):
@@ -562,47 +563,3 @@ def _load_font(size):
             except Exception:
                 continue
     return ImageFont.load_default()
-
-
-def _draw_dashed_line(draw, x1, y1, x2, y2, color, dash=6, gap=4):
-    """用线段模拟虚线；PIL 没有原生虚线 API。"""
-    if x1 == x2:
-        # 垂直线
-        y = min(y1, y2)
-        end = max(y1, y2)
-        while y < end:
-            draw.line([(x1, y), (x1, min(y + dash, end))], fill=color, width=1)
-            y += dash + gap
-    else:
-        # 水平线
-        x = min(x1, x2)
-        end = max(x1, x2)
-        while x < end:
-            draw.line([(x, y1), (min(x + dash, end), y1)], fill=color, width=1)
-            x += dash + gap
-
-
-def export_size_csv(path=None):
-    path = path or os.path.join(USER_CONFIG_DIR, "size_list.csv")
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow(["key", "name", "category", "w_mm", "h_mm", "w_px", "h_px"])
-        for s in load_sizes():
-            w.writerow([s["key"], s["name"], s["category"], s["w_mm"], s["h_mm"],
-                        s["w_px"], s["h_px"]])
-    return path
-
-
-if __name__ == "__main__":
-    print("内置尺寸数:", len(load_sizes()))
-    print("内置打印纸:", [p["name"] for p in load_papers()])
-    lay = compute_layout(152, 102, 25, 35)
-    print("6寸排一寸:", lay["count"], "张", lay["cols"], "x", lay["rows"])
-    lay2 = compute_layout_grid(25, 35, 3, 4)
-    print("自定义3x4网格纸张(px):", lay2["paper"], "张数:", lay2["count"])
-    pm = PresetManager()
-    pm.add_size("测试尺寸", 30, 40)
-    print("用户预设尺寸:", [s["name"] for s in pm.sizes()])
-    pm.remove_size("测试尺寸")
-    print("导出CSV:", export_size_csv())

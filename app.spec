@@ -96,6 +96,8 @@ app = BUNDLE(
         "CFBundleVersion": "2.0.0",
         "CFBundleShortVersionString": "2.0.0",
         "CFBundleIconFile": "app.icns",
+        "LSUIElement": False,
+        "LSBackgroundOnly": False,
         "NSHighResolutionCapable": True,
         "NSPrincipalClass": "NSApplication",
     },
