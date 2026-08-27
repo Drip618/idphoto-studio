@@ -2,17 +2,18 @@
 """
 ui/main_window.py — 证件照工作室 macOS / Windows 工业级原生桌面界面
 ===================================================================
-- 线程安全架构：杜绝 QThread GC 销毁引发的意外退出/崩溃 (Abort Trap: 6)
-- 照相馆国标证件照构图 (Head-Centric Standard)：头部饱满、锁骨与双肩自然对称展开，彻底根除两侧露底色
+- 苹果 macOS 原生视觉设计规范（SF Pro / 苹方，扁平优雅、原生卡片、通透灰白调）
+- 照相馆自然标准证件照构图 (Studio Natural Framing)：
+  - 完整呈现头脸、五官、下巴、脖子、衣领与双肩展开，彻底根除大头贴放大截断
+  - 支持「人像缩放」与「上下/左右位置微调」
 - 照相馆规范相纸排版：
-  - 5寸相纸 (89x127mm 竖版): 上2张二寸 + 下6张一寸 (3列x2行，满幅无大块留白)
-  - 6寸相纸 (102x152mm 竖版): 上4张二寸 + 下4张一寸 (4列x1行，满幅规整)
-  - 5寸单规格: 9张一寸 / 4张二寸
-  - 6寸单规格: 16张一寸 / 8张二寸
+  - 自由选择「相纸朝向」：自动最优 / 强制横版 (Landscape) / 强制竖版 (Portrait)
+  - 5寸竖版 (89x127mm): 上2张二寸 + 下6张一寸 (3列x2行，共8张满幅)
+  - 6寸横版 (152x102mm): 左4张二寸 (2x2) + 右6张一寸 (3x2) (共10张，照相馆最畅销冲印版)
+  - 6寸竖版 (102x152mm): 上4张二寸 (2x2) + 下6张一寸 (3x2) (共10张)
 - 自由多尺寸自定义混排装箱引擎
 - 新增「✂️ 手动选区/裁剪人像」交互式工具
-- 预览区浅灰精致相框，白底照片绝不融为一体
-- 底部操作栏固定无闪烁，支持用户自主选择导出格式 (PNG / JPG / 两种都要)
+- 线程安全生命周期管理：杜绝 QThread GC 销毁引发的意外退出/崩溃 (Abort Trap: 6)
 """
 
 import os
@@ -27,7 +28,7 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton, QComboBox, QFileDialog, QMessageBox,
     QProgressBar, QScrollArea, QFrame, QSplitter, QCheckBox,
     QLineEdit, QDialog, QFormLayout, QSpinBox, QColorDialog, QButtonGroup,
-    QGridLayout
+    QGridLayout, QSlider
 )
 
 from core import idphoto_core as core
@@ -382,7 +383,8 @@ class RenderWorker(QThread):
     error = Signal(str, int)
 
     def __init__(self, image_input, size_dict, color_dict, mode_idx, extra_params,
-                 cut_lines, add_text, cached_rgba=None, req_id=0):
+                 cut_lines, add_text, cached_rgba=None, req_id=0,
+                 zoom_ratio=1.0, offset_y_ratio=0.0, offset_x_ratio=0.0):
         super().__init__()
         self.image_input = image_input
         self.size_dict = size_dict
@@ -393,6 +395,9 @@ class RenderWorker(QThread):
         self.add_text = add_text
         self.cached_rgba = cached_rgba
         self.req_id = req_id
+        self.zoom_ratio = zoom_ratio
+        self.offset_y_ratio = offset_y_ratio
+        self.offset_x_ratio = offset_x_ratio
 
     def run(self):
         try:
@@ -407,12 +412,14 @@ class RenderWorker(QThread):
 
             if need_matting and self.cached_rgba is not None:
                 id_photo = core.create_standard_id_photo(
-                    self.cached_rgba, self.size_dict["w_px"], self.size_dict["h_px"], bg_rgb
+                    self.cached_rgba, self.size_dict["w_px"], self.size_dict["h_px"], bg_rgb,
+                    zoom_ratio=self.zoom_ratio, offset_y_ratio=self.offset_y_ratio, offset_x_ratio=self.offset_x_ratio
                 )
             else:
                 matting = core.Matting() if (need_matting and core.Matting().available()) else None
                 id_photo = core.prepare_id_photo(
-                    img, self.size_dict["w_px"], self.size_dict["h_px"], bg_rgb, matting
+                    img, self.size_dict["w_px"], self.size_dict["h_px"], bg_rgb, matting,
+                    zoom_ratio=self.zoom_ratio, offset_y_ratio=self.offset_y_ratio, offset_x_ratio=self.offset_x_ratio
                 )
 
             # 0: 仅单张证件照 (默认)
@@ -423,14 +430,18 @@ class RenderWorker(QThread):
 
             # 2: 照相馆标准规整混排
             if self.mode_idx == 2:
-                mix_type = self.extra_params.get("mix_type", "5in_2_6")
+                mix_type = self.extra_params.get("mix_type", "6in_landscape_4_6")
                 if self.cached_rgba is not None:
-                    id_1in = core.create_standard_id_photo(self.cached_rgba, core.mm_to_px(25), core.mm_to_px(35), bg_rgb)
-                    id_2in = core.create_standard_id_photo(self.cached_rgba, core.mm_to_px(35), core.mm_to_px(49), bg_rgb)
+                    id_1in = core.create_standard_id_photo(self.cached_rgba, core.mm_to_px(25), core.mm_to_px(35), bg_rgb,
+                                                           zoom_ratio=self.zoom_ratio, offset_y_ratio=self.offset_y_ratio, offset_x_ratio=self.offset_x_ratio)
+                    id_2in = core.create_standard_id_photo(self.cached_rgba, core.mm_to_px(35), core.mm_to_px(49), bg_rgb,
+                                                           zoom_ratio=self.zoom_ratio, offset_y_ratio=self.offset_y_ratio, offset_x_ratio=self.offset_x_ratio)
                 else:
                     matting = core.Matting() if (bg_rgb is not None and core.Matting().available()) else None
-                    id_1in = core.prepare_id_photo(img, core.mm_to_px(25), core.mm_to_px(35), bg_rgb, matting)
-                    id_2in = core.prepare_id_photo(img, core.mm_to_px(35), core.mm_to_px(49), bg_rgb, matting)
+                    id_1in = core.prepare_id_photo(img, core.mm_to_px(25), core.mm_to_px(35), bg_rgb, matting,
+                                                   zoom_ratio=self.zoom_ratio, offset_y_ratio=self.offset_y_ratio, offset_x_ratio=self.offset_x_ratio)
+                    id_2in = core.prepare_id_photo(img, core.mm_to_px(35), core.mm_to_px(49), bg_rgb, matting,
+                                                   zoom_ratio=self.zoom_ratio, offset_y_ratio=self.offset_y_ratio, offset_x_ratio=self.offset_x_ratio)
 
                 sheet, info = core.compose_mixed_sheet(id_1in, id_2in, mix_type=mix_type, cut_lines=self.cut_lines, add_text=self.add_text)
                 self.done.emit(sheet, info, False, id_photo, self.req_id)
@@ -439,25 +450,29 @@ class RenderWorker(QThread):
             # 3: 自由多尺寸自定义混排
             if self.mode_idx == 3:
                 counts = self.extra_params.get("counts", {})
-                paper = self.extra_params.get("paper", core.load_papers()[0]) # 默认5寸
+                paper = self.extra_params.get("paper", core.load_papers()[1])
+                ori = self.extra_params.get("orientation", "auto")
                 images_dict = {}
                 for k, w_mm, h_mm in [("2in", 35, 49), ("1in", 25, 35), ("s_1in", 22, 32), ("l_2in", 35, 53)]:
                     if self.cached_rgba is not None:
-                        images_dict[k] = core.create_standard_id_photo(self.cached_rgba, core.mm_to_px(w_mm), core.mm_to_px(h_mm), bg_rgb)
+                        images_dict[k] = core.create_standard_id_photo(self.cached_rgba, core.mm_to_px(w_mm), core.mm_to_px(h_mm), bg_rgb,
+                                                                       zoom_ratio=self.zoom_ratio, offset_y_ratio=self.offset_y_ratio, offset_x_ratio=self.offset_x_ratio)
                     else:
                         matting = core.Matting() if (bg_rgb is not None and core.Matting().available()) else None
-                        images_dict[k] = core.prepare_id_photo(img, core.mm_to_px(w_mm), core.mm_to_px(h_mm), bg_rgb, matting)
+                        images_dict[k] = core.prepare_id_photo(img, core.mm_to_px(w_mm), core.mm_to_px(h_mm), bg_rgb, matting,
+                                                               zoom_ratio=self.zoom_ratio, offset_y_ratio=self.offset_y_ratio, offset_x_ratio=self.offset_x_ratio)
 
-                sheet, info, fits = core.compose_custom_mixed_sheet(images_dict, counts, paper, cut_lines=self.cut_lines)
+                sheet, info, fits = core.compose_custom_mixed_sheet(images_dict, counts, paper, cut_lines=self.cut_lines, orientation=ori)
                 self.done.emit(sheet, info, False, id_photo, self.req_id)
                 return
 
             # 1: 照相馆标准相纸排版, 4: 自定义网格
+            ori = self.extra_params.get("orientation", "auto")
             if self.mode_idx == 1:
                 p = self.extra_params["paper"]
-                lay = core.compute_layout(p["w_mm"], p["h_mm"], self.size_dict["w_mm"], self.size_dict["h_mm"])
+                lay = core.compute_layout(p["w_mm"], p["h_mm"], self.size_dict["w_mm"], self.size_dict["h_mm"], orientation=ori)
             else:
-                p = self.extra_params.get("paper", core.load_papers()[0])
+                p = self.extra_params.get("paper", core.load_papers()[1])
                 lay = core.compute_layout_grid(self.size_dict["w_mm"], self.size_dict["h_mm"],
                                                self.extra_params["rows"], self.extra_params["cols"],
                                                paper_w_mm=p["w_mm"], paper_h_mm=p["h_mm"])
@@ -697,7 +712,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("证件照工作室 Studio")
-        self.setMinimumSize(1000, 720)
+        self.setMinimumSize(1020, 720)
         self.setAcceptDrops(True)
 
         self.settings = QSettings("IDPhotoStudio", "Settings")
@@ -731,7 +746,7 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Horizontal)
         splitter.setHandleWidth(4)
 
-        # ----------------- 左侧控制面板 -----------------
+        # ----------------- 左侧控制面板 (原生 macOS 风格) -----------------
         left_container = QWidget()
         left_container.setMinimumWidth(390)
         left_container.setMaximumWidth(460)
@@ -805,6 +820,38 @@ class MainWindow(QMainWindow):
         tool_row.addWidget(self.btn_reset_crop)
         cl.addLayout(tool_row)
 
+        # 人像构图微调工具栏 (可自由调节人像缩放与位置)
+        framing_box = QFrame()
+        framing_l = QVBoxLayout(framing_box); framing_l.setContentsMargins(0, 4, 0, 0); framing_l.setSpacing(4)
+        
+        row_zoom = QHBoxLayout()
+        row_zoom.addWidget(QLabel("人像大小:"))
+        self.slider_zoom = QSlider(Qt.Horizontal)
+        self.slider_zoom.setRange(70, 140) # 70% ~ 140%
+        self.slider_zoom.setValue(100)
+        self.slider_zoom.valueChanged.connect(self.schedule_render)
+        row_zoom.addWidget(self.slider_zoom)
+        self.lbl_zoom_val = QLabel("100%")
+        self.lbl_zoom_val.setFixedWidth(40)
+        self.slider_zoom.valueChanged.connect(lambda v: self.lbl_zoom_val.setText(f"{v}%"))
+        row_zoom.addWidget(self.lbl_zoom_val)
+        framing_l.addLayout(row_zoom)
+
+        row_pos = QHBoxLayout()
+        row_pos.addWidget(QLabel("上下位置:"))
+        self.slider_pos_y = QSlider(Qt.Horizontal)
+        self.slider_pos_y.setRange(-20, 20) # -20% ~ +20%
+        self.slider_pos_y.setValue(0)
+        self.slider_pos_y.valueChanged.connect(self.schedule_render)
+        row_pos.addWidget(self.slider_pos_y)
+        btn_reset_frame = QPushButton("↺ 重置")
+        btn_reset_frame.setObjectName("SecondaryBtn")
+        btn_reset_frame.clicked.connect(self.reset_framing)
+        row_pos.addWidget(btn_reset_frame)
+        framing_l.addLayout(row_pos)
+
+        cl.addWidget(framing_box)
+
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
         cl.addWidget(self.progress_bar)
@@ -871,6 +918,19 @@ class MainWindow(QMainWindow):
         self.mode_combo.currentIndexChanged.connect(self.on_mode_changed)
         pl.addWidget(self.mode_combo)
 
+        # 相纸朝向选择器 (模式 1、3、4 使用)
+        self.ori_container = QWidget()
+        ori_l = QHBoxLayout(self.ori_container); ori_l.setContentsMargins(0, 0, 0, 0); ori_l.setSpacing(6)
+        ori_l.addWidget(QLabel("相纸朝向:"))
+        self.ori_combo = QComboBox()
+        self.ori_combo.addItem("🔄 自动最优朝向", "auto")
+        self.ori_combo.addItem("↔️ 强制横版 (Landscape)", "landscape")
+        self.ori_combo.addItem("↕️ 强制竖版 (Portrait)", "portrait")
+        self.ori_combo.currentIndexChanged.connect(self.schedule_render)
+        ori_l.addWidget(self.ori_combo, 1)
+        pl.addWidget(self.ori_container)
+        self.ori_container.setVisible(False)
+
         # 相纸选择容器
         self.paper_container = QWidget()
         paper_l = QVBoxLayout(self.paper_container); paper_l.setContentsMargins(0, 0, 0, 0); paper_l.setSpacing(4)
@@ -883,14 +943,15 @@ class MainWindow(QMainWindow):
         pl.addWidget(self.paper_container)
         self.paper_container.setVisible(False)
 
-        # 经典混排类型容器 (模式 2: 5寸上2二寸+下6一寸 / 6寸上4二寸+下4一寸)
+        # 经典混排类型容器 (模式 2)
         self.mix_container = QWidget()
         mix_l = QVBoxLayout(self.mix_container); mix_l.setContentsMargins(0, 0, 0, 0); mix_l.setSpacing(4)
         mix_l.addWidget(QLabel("照相馆标准混排方案:"))
         self.mix_combo = QComboBox()
-        self.mix_combo.addItem("5寸标准混排 · 上2张二寸 + 下6张一寸 (整齐满幅)", "5in_2_6")
-        self.mix_combo.addItem("6寸标准混排 · 上4张二寸 + 下4张一寸 (规整满幅)", "6in_4_4")
-        self.mix_combo.addItem("6寸多一寸混排 · 上2张二寸 + 下8张一寸 (高性价比)", "6in_2_8")
+        self.mix_combo.addItem("6寸横版金牌混排 · 4张二寸 + 6张一寸 (共10张 · 最畅销)", "6in_landscape_4_6")
+        self.mix_combo.addItem("6寸竖版经典混排 · 4张二寸 + 6张一寸 (共10张)", "6in_portrait_4_6")
+        self.mix_combo.addItem("5寸标准混排 · 2张二寸 + 6张一寸 (共8张满幅)", "5in_portrait_2_6")
+        self.mix_combo.addItem("6寸多一寸混排 · 2张二寸 + 8张一寸 (共10张)", "6in_portrait_2_8")
         self.mix_combo.currentIndexChanged.connect(self.schedule_render)
         mix_l.addWidget(self.mix_combo)
         pl.addWidget(self.mix_container)
@@ -905,7 +966,7 @@ class MainWindow(QMainWindow):
         form_counts.setContentsMargins(0, 0, 0, 0)
         form_counts.setSpacing(6)
 
-        self.spin_2in = QSpinBox(); self.spin_2in.setRange(0, 12); self.spin_2in.setValue(2)
+        self.spin_2in = QSpinBox(); self.spin_2in.setRange(0, 12); self.spin_2in.setValue(4)
         self.spin_2in.setFixedWidth(80)
         self.spin_2in.valueChanged.connect(self.schedule_render)
         form_counts.addRow("二寸 (35×49mm):", self.spin_2in)
@@ -937,11 +998,11 @@ class MainWindow(QMainWindow):
         gl = QVBoxLayout(self.grid_container); gl.setContentsMargins(0, 0, 0, 0); gl.setSpacing(4)
         grow = QHBoxLayout()
         grow.addWidget(QLabel("列数:"))
-        self.spin_cols = QSpinBox(); self.spin_cols.setRange(1, 10); self.spin_cols.setValue(3)
+        self.spin_cols = QSpinBox(); self.spin_cols.setRange(1, 10); self.spin_cols.setValue(4)
         self.spin_cols.valueChanged.connect(self.schedule_render)
         grow.addWidget(self.spin_cols)
         grow.addWidget(QLabel("行数:"))
-        self.spin_rows = QSpinBox(); self.spin_rows.setRange(1, 10); self.spin_rows.setValue(3)
+        self.spin_rows = QSpinBox(); self.spin_rows.setRange(1, 10); self.spin_rows.setValue(2)
         self.spin_rows.valueChanged.connect(self.schedule_render)
         grow.addWidget(self.spin_rows)
         gl.addLayout(grow)
@@ -1071,7 +1132,13 @@ class MainWindow(QMainWindow):
             self.colors_data.append(custom_dict)
             self.schedule_render()
 
+    def reset_framing(self):
+        self.slider_zoom.setValue(100)
+        self.slider_pos_y.setValue(0)
+        self.schedule_render()
+
     def on_mode_changed(self, idx):
+        self.ori_container.setVisible(idx in (1, 3, 4))
         self.paper_container.setVisible(idx in (1, 3, 4))
         self.mix_container.setVisible(idx == 2)
         self.custom_mix_container.setVisible(idx == 3)
@@ -1212,15 +1279,19 @@ class MainWindow(QMainWindow):
         mode_idx = self.mode_combo.currentIndex()
         extra_params = {}
 
+        # 相纸朝向
+        ori = self.ori_combo.currentData() or "auto"
+        extra_params["orientation"] = ori
+
         if mode_idx in (1, 4):
-            extra_params["paper"] = self.paper_combo.currentData() or core.load_papers()[0]
+            extra_params["paper"] = self.paper_combo.currentData() or core.load_papers()[1]
             if mode_idx == 4:
                 extra_params["rows"] = self.spin_rows.value()
                 extra_params["cols"] = self.spin_cols.value()
         elif mode_idx == 2:
-            extra_params["mix_type"] = self.mix_combo.currentData() or "5in_2_6"
+            extra_params["mix_type"] = self.mix_combo.currentData() or "6in_landscape_4_6"
         elif mode_idx == 3:
-            extra_params["paper"] = self.paper_combo.currentData() or core.load_papers()[0]
+            extra_params["paper"] = self.paper_combo.currentData() or core.load_papers()[1]
             extra_params["counts"] = {
                 "2in": self.spin_2in.value(),
                 "1in": self.spin_1in.value(),
@@ -1231,10 +1302,14 @@ class MainWindow(QMainWindow):
         cut_lines = self.chk_cut_lines.isChecked()
         add_text = self.chk_add_text.isChecked()
 
+        zoom_val = self.slider_zoom.value() / 100.0 # 0.7 ~ 1.4
+        pos_y_val = self.slider_pos_y.value() / 100.0 # -0.2 ~ +0.2
+
         self._render_req_id += 1
         worker = RenderWorker(
             active_img, size_dict, color_dict, mode_idx, extra_params,
-            cut_lines, add_text, cached_rgba=self.cached_rgba, req_id=self._render_req_id
+            cut_lines, add_text, cached_rgba=self.cached_rgba, req_id=self._render_req_id,
+            zoom_ratio=zoom_val, offset_y_ratio=pos_y_val, offset_x_ratio=0.0
         )
         self._running_threads.append(worker)
 
