@@ -2,10 +2,11 @@
 """
 idphoto_core.py — 证件照换底色 + 排版打印 核心引擎（数据驱动，无 GUI 依赖）
 =========================================================================
-- 智能抠图：SOTA 级 RMBG-1.4 高清发丝抠图模型（1024x1024 亚像素精度，发丝边缘极致纯净）
+- 智能抠图：SOTA 级 BRIA RMBG-1.4 高清发丝抠图模型（1024x1024 亚像素精度，发丝边缘极致纯净）
 - 照相馆标准证件照构图：头顶留白 8%，人像底部贴死画幅边缘（绝无悬空底边）
-- 行业规范冲印排版：默认舒适留白，带标准裁切虚线框
-- 常用混排冲印：6寸 (4张2寸+4张1寸) / 5寸 (2张2寸+4张1寸)，全正立直放
+- 行业规范冲印排版：5寸/6寸置顶，舒适留白，带标准裁切虚线框与尺寸标线
+- 黄金对称混排冲印：5寸 (2二寸+4一寸)、6寸 (4二寸+6一寸 / 2二寸+8一寸 / 4二寸+4一寸)
+- 自由自定义多尺寸混排引擎：支持任意组合与相纸容量超限安全保护
 """
 
 import os
@@ -28,7 +29,7 @@ PX_PER_MM = DPI / 25.4
 MODEL_NAMES = [
     "rmbg_quantized.onnx",
     "hivision_modnet.onnx",
-    "modnet_photographic_portrait_matting.onnx"
+    "modnet_photographic_portrait_matting.onnx",
 ]
 
 
@@ -36,83 +37,107 @@ def mm_to_px(mm):
     return int(round(mm * PX_PER_MM))
 
 
-# ============================================================ 尺寸库
+def px_to_mm(px):
+    return round(px / PX_PER_MM, 1)
+
+
+# ============================================================ 内置常用证件照规格
 BUILTIN_SIZES = [
-    ("cn_1inch", "一寸", "中国标准", 25, 35),
-    ("cn_2inch", "二寸", "中国标准", 35, 49),
-    ("cn_1inch_s", "小一寸", "中国标准", 22, 32),
-    ("cn_2inch_s", "小二寸", "中国标准", 35, 45),
-    ("cn_1inch_l", "大一寸", "中国标准", 33, 48),
-    ("cn_2inch_l", "大二寸", "中国标准", 35, 53),
-    ("cn_id", "身份证(冲洗)", "中国标准", 26, 32),
-    ("cn_dl", "驾驶证", "中国标准", 22, 32),
-    ("cn_passport", "中国护照", "中国标准", 33, 48),
-    ("cn_hk_mo", "港澳通行证", "中国标准", 33, 48),
-    ("cn_tw", "台湾通行证", "中国标准", 33, 48),
-    ("cn_visa", "签证(通用)", "中国标准", 33, 48),
-    ("cn_marry", "结婚证", "中国标准", 35, 49),
-    ("cn_resume", "简历求职", "中国标准", 25, 35),
-    ("us_passport", "美国护照/签证", "国际", 51, 51),
-    ("us_green", "美国绿卡", "国际", 51, 51),
-    ("eu_schengen", "申根签证", "国际", 35, 45),
-    ("jp_visa", "日本签证/护照", "国际", 35, 45),
-    ("kr_visa", "韩国签证/护照", "国际", 35, 45),
-    ("uk_passport", "英国护照/签证", "国际", 35, 45),
-    ("ca_passport", "加拿大护照", "国际", 50, 70),
-    ("au_visa", "澳洲签证/护照", "国际", 35, 45),
-    ("my_visa", "马来西亚签证", "国际", 35, 50),
-    ("sg_visa", "新加坡签证", "国际", 35, 45),
-    ("th_visa", "泰国签证", "国际", 35, 45),
+    # 常用中国标准
+    ("cn_1inch", "一寸 (25×35mm) - 中国标准", "常用", 25, 35),
+    ("cn_2inch", "二寸 (35×49mm) - 中国标准", "常用", 35, 49),
+    ("cn_1inch_s", "小一寸 (22×32mm) - 驾驶证/表格", "常用", 22, 32),
+    ("cn_1inch_l", "大一寸 (33×48mm) - 中国护照/签证", "常用", 33, 48),
+    ("cn_2inch_s", "小二寸 (35×45mm) - 护照通用", "常用", 35, 45),
+    ("cn_2inch_l", "大二寸 (35×53mm) - 部分专业证书", "常用", 35, 53),
+    ("cn_3inch", "三寸 (55×84mm)", "常用", 55, 84),
+    ("cn_5inch", "五寸 (89×127mm) - 证件档案", "常用", 89, 127),
+
+    # 国际护照与签证
+    ("visa_us", "美国签证 (51×51mm / 2×2英寸)", "国际签证", 51, 51),
+    ("visa_schengen", "申根/欧洲签证 (35×45mm)", "国际签证", 35, 45),
+    ("visa_jp", "日本签证 (35×45mm)", "国际签证", 35, 45),
+    ("visa_kr", "韩国签证 (35×45mm)", "国际签证", 35, 45),
+    ("visa_uk", "英国签证 (35×45mm)", "国际签证", 35, 45),
+    ("visa_ca", "加拿大签证 (35×45mm)", "国际签证", 35, 45),
+    ("visa_au", "澳大利亚签证 (35×45mm)", "国际签证", 35, 45),
+    ("visa_sg", "新加坡签证 (35×45mm)", "国际签证", 35, 45),
+
+    # 考试与职业资格
+    ("exam_teacher", "教师资格证 (25×35mm)", "考试考证", 25, 35),
+    ("exam_cet", "英语四六级 CET (240×320px)", "考试考证", 20, 27),
+    ("exam_ncre", "计算机二级 NCRE (33×48mm)", "考试考证", 33, 48),
+    ("exam_civil", "国考/省考公务员 (35×45mm)", "考试考证", 35, 45),
+    ("exam_postgrad", "全国考研网报 (35×45mm)", "考试考证", 35, 45),
+    ("exam_driver", "机动车驾驶证 (22×32mm)", "考试考证", 22, 32),
+    ("exam_social_sec", "社保卡/医保卡 (26×32mm)", "考试考证", 26, 32),
+    ("exam_law", "法律职业资格 (35×45mm)", "考试考证", 35, 45),
+    ("exam_account", "初级/中级会计 (25×35mm)", "考试考证", 25, 35),
 ]
 
-BUILTIN_COLORS = [
-    ("blue", "蓝底", "#438EDB"),
-    ("red", "红底", "#FF0000"),
-    ("white", "白底", "#FFFFFF"),
-    ("navy", "深蓝底", "#1E50A2"),
-    ("gray", "灰底", "#D1D5DB"),
-    ("none", "原图", None),
-]
-
+# ============================================================ 内置常用冲印相纸 (5寸置顶，从小到大规范排列)
 BUILTIN_PAPERS = [
-    ("p6", "6寸 (102×152mm)", 102, 152),
-    ("p5", "5寸 (89×127mm)", 89, 127),
-    ("p7", "7寸 (127×178mm)", 127, 178),
-    ("A4", "A4 (210×297mm)", 210, 297),
-    ("A5", "A5 (148×210mm)", 148, 210),
+    ("p5", "5寸 (89×127mm) - 照相馆常用相纸", 89, 127),
+    ("p6", "6寸 (102×152mm) - 最主流冲印相纸 (4R)", 102, 152),
+    ("p7", "7寸 (127×178mm) - 常用大相纸 (5R)", 127, 178),
+    ("p8", "8寸 (152×203mm) - 8R", 152, 203),
+    ("p10", "10寸 (203×254mm) - 10R", 203, 254),
+    ("A4", "A4 (210×297mm) - 普通办公打印纸", 210, 297),
+    ("A5", "A5 (148×210mm) - A4半张", 148, 210),
+    ("A6", "A6 (105×148mm) - A4四分之一", 105, 148),
+    ("3R", "3R相纸 (89×127mm)", 89, 127),
+    ("4R", "4R相纸 (102×152mm)", 102, 152),
+    ("5R", "5R相纸 (127×178mm)", 127, 178),
 ]
 
-
-def hex_to_rgb(h):
-    if not h:
-        return None
-    h = h.lstrip("#")
-    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+# ============================================================ 内置证件照标准底色
+BUILTIN_COLORS = [
+    ("blue", "蓝色 (标准冲印蓝)", (67, 142, 219), "#438edb"),
+    ("red", "红色 (标准证件红)", (255, 0, 0), "#ff0000"),
+    ("white", "白色 (标准白底)", (255, 255, 255), "#ffffff"),
+    ("dark_blue", "深蓝 (港澳通行证)", (18, 59, 145), "#123b91"),
+    ("gray", "灰色 (高端证件灰)", (219, 222, 227), "#dbdee3"),
+    ("orig", "原图 (不换背景)", None, "#e2e8f0"),
+]
 
 
 def _size_to_dict(t):
-    key, name, cat, w, h = t
-    return {"key": key, "name": name, "category": cat,
-            "w_mm": w, "h_mm": h, "w_px": mm_to_px(w), "h_px": mm_to_px(h)}
+    key, name, cat, w_mm, h_mm = t
+    return {
+        "key": key,
+        "name": name,
+        "category": cat,
+        "w_mm": w_mm,
+        "h_mm": h_mm,
+        "w_px": mm_to_px(w_mm),
+        "h_px": mm_to_px(h_mm),
+    }
 
 
 def _paper_to_dict(t):
-    key, name, w, h = t
-    return {"key": key, "name": name, "w_mm": w, "h_mm": h,
-            "w_px": mm_to_px(w), "h_px": mm_to_px(h)}
+    key, name, w_mm, h_mm = t
+    return {
+        "key": key,
+        "name": name,
+        "w_mm": w_mm,
+        "h_mm": h_mm,
+        "w_px": mm_to_px(w_mm),
+        "h_px": mm_to_px(h_mm),
+    }
 
 
 def _color_to_dict(t):
-    key, name, hexv = t
-    return {"key": key, "name": name, "hex": hexv,
-            "rgb": hex_to_rgb(hexv) if hexv else None}
+    key, name, rgb, hex_c = t
+    return {
+        "key": key,
+        "name": name,
+        "rgb": rgb,
+        "hex": hex_c,
+    }
 
 
-def load_sizes(user_only=False):
-    if user_only:
-        return PresetManager().sizes()
-    builtin = [_size_to_dict(t) for t in BUILTIN_SIZES]
-    return builtin + PresetManager().sizes()
+def load_sizes():
+    return [_size_to_dict(t) for t in BUILTIN_SIZES] + PresetManager().sizes()
 
 
 def load_papers():
@@ -188,6 +213,21 @@ class PresetManager:
 
     def remove_paper(self, name):
         self.data["papers"] = [p for p in self.data["papers"] if p["name"] != name]
+        self._save()
+
+    def colors(self):
+        out = []
+        for c in self.data["colors"]:
+            out.append({"key": "u_" + c["name"], "name": c["name"],
+                        "rgb": tuple(c["rgb"]), "hex": c["hex"]})
+        return out
+
+    def add_color(self, name, rgb, hex_c):
+        self.data["colors"].append({"name": name, "rgb": list(rgb), "hex": hex_c})
+        self._save()
+
+    def remove_color(self, name):
+        self.data["colors"] = [c for c in self.data["colors"] if c["name"] != name]
         self._save()
 
 
@@ -347,239 +387,459 @@ def prepare_id_photo(image, id_w_px, id_h_px, bg_rgb, matting=None):
     return _center_crop_fill(image.convert("RGB"), id_w_px, id_h_px)
 
 
-# ============================================================ 冲印标准排版引擎 (照相馆规范舒适版)
+# ============================================================ 照相馆规范舒适冲印排版算法
 def compute_layout(paper_w_mm, paper_h_mm, id_w_mm, id_h_mm):
     """
-    照相馆冲印规范排版：
-    - 6寸 (102x152mm): 二寸 8张 (4x2横版) / 一寸 8张 (4x2舒适版) 或 12张 (3x4)
-    - 5寸 (89x127mm):  一寸 8张 (4x2舒适版) / 二寸 4张 (2x2舒适版)
+    照相馆标准冲印排版算法：
+    自动在横放与竖放中选择最合适的方向，留出舒适的打印机走纸边距 (4~5mm) 与裁切线。
     """
-    # 照相馆规范参数 (相纸宽, 相纸高, 列数, 行数, gap_mm, margin_mm)
+    # 针对常见经典组合提供标准舒适规范预设
     standards = {
-        (102, 152, 25, 35): (152, 102, 4, 2, 2.0, 4.0),   # 6寸排一寸: 8张舒适版
-        (102, 152, 35, 49): (152, 102, 4, 2, 1.2, 3.0),   # 6寸排二寸: 8张
-        (102, 152, 35, 45): (152, 102, 4, 2, 1.2, 3.0),   # 6寸排小二寸: 8张
-        (102, 152, 33, 48): (152, 102, 4, 2, 1.2, 3.0),   # 6寸排大一寸: 8张
-        (89, 127, 25, 35):  (127, 89, 4, 2, 2.0, 4.0),    # 5寸排一寸: 8张舒适版
-        (89, 127, 35, 49):  (89, 127, 2, 2, 2.0, 5.0),    # 5寸排二寸: 4张舒适版
-        (127, 178, 25, 35): (127, 178, 4, 3, 2.0, 5.0),   # 7寸排一寸: 12张
-        (127, 178, 35, 49): (127, 178, 3, 3, 2.0, 5.0),   # 7寸排二寸: 9张
+        # 6寸相纸: 102 x 152 mm (横放 152 x 102)
+        (102, 152, 25, 35): {"paper_w": 152, "paper_h": 102, "cols": 4, "rows": 2, "count": 8, "gap": 1.5, "margin": 4.0},
+        (102, 152, 35, 49): {"paper_w": 152, "paper_h": 102, "cols": 4, "rows": 2, "count": 8, "gap": 1.2, "margin": 3.0},
+        (102, 152, 22, 32): {"paper_w": 152, "paper_h": 102, "cols": 4, "rows": 2, "count": 8, "gap": 1.5, "margin": 4.0},
+        (102, 152, 33, 48): {"paper_w": 152, "paper_h": 102, "cols": 4, "rows": 2, "count": 8, "gap": 1.2, "margin": 3.0},
+        (102, 152, 35, 45): {"paper_w": 152, "paper_h": 102, "cols": 4, "rows": 2, "count": 8, "gap": 1.2, "margin": 3.0},
+
+        # 5寸相纸: 89 x 127 mm (横放 127 x 89)
+        (89, 127, 25, 35): {"paper_w": 127, "paper_h": 89, "cols": 4, "rows": 2, "count": 8, "gap": 1.2, "margin": 3.5},
+        (89, 127, 35, 49): {"paper_w": 89, "paper_h": 127, "cols": 2, "rows": 2, "count": 4, "gap": 2.0, "margin": 5.0},
+        (89, 127, 22, 32): {"paper_w": 127, "paper_h": 89, "cols": 4, "rows": 2, "count": 8, "gap": 1.2, "margin": 3.5},
+        (89, 127, 33, 48): {"paper_w": 89, "paper_h": 127, "cols": 2, "rows": 2, "count": 4, "gap": 2.0, "margin": 5.0},
+        (89, 127, 35, 45): {"paper_w": 89, "paper_h": 127, "cols": 2, "rows": 2, "count": 4, "gap": 2.0, "margin": 5.0},
+
+        # 7寸相纸: 127 x 178 mm
+        (127, 178, 25, 35): {"paper_w": 178, "paper_h": 127, "cols": 4, "rows": 3, "count": 12, "gap": 1.5, "margin": 4.0},
+        (127, 178, 35, 49): {"paper_w": 178, "paper_h": 127, "cols": 4, "rows": 2, "count": 8, "gap": 2.0, "margin": 5.0},
+
+        # A4相纸: 210 x 297 mm
+        (210, 297, 25, 35): {"paper_w": 210, "paper_h": 297, "cols": 6, "rows": 6, "count": 36, "gap": 2.0, "margin": 8.0},
+        (210, 297, 35, 49): {"paper_w": 210, "paper_h": 297, "cols": 4, "rows": 4, "count": 16, "gap": 3.0, "margin": 10.0},
     }
 
-    key = (min(paper_w_mm, paper_h_mm), max(paper_w_mm, paper_h_mm), id_w_mm, id_h_mm)
-    if key in standards:
-        w_p, h_p, cols, rows, g_mm, m_mm = standards[key]
-        count = cols * rows
+    match = standards.get((min(paper_w_mm, paper_h_mm), max(paper_w_mm, paper_h_mm), id_w_mm, id_h_mm))
+    if match:
+        pw, ph = match["paper_w"], match["paper_h"]
+        cols, rows, count = match["cols"], match["rows"], match["count"]
+        gap, margin = match["gap"], match["margin"]
     else:
+        # 通用自适应计算
         best = None
-        for (w_p_c, h_p_c) in [(paper_w_mm, paper_h_mm), (paper_h_mm, paper_w_mm)]:
-            for g_c in [2.0, 1.5, 1.0]:
-                for m_c in [5.0, 4.0, 3.0]:
-                    cols_c = int((w_p_c - 2 * m_c + g_c) // (id_w_mm + g_c))
-                    rows_c = int((h_p_c - 2 * m_c + g_c) // (id_h_mm + g_c))
+        for (w_p, h_p) in [(paper_w_mm, paper_h_mm), (paper_h_mm, paper_w_mm)]:
+            for g in [1.5, 1.0, 0.8]:
+                for m in [5.0, 4.0, 3.0, 2.0]:
+                    cols_c = int((w_p - 2 * m + g) // (id_w_mm + g))
+                    rows_c = int((h_p - 2 * m + g) // (id_h_mm + g))
                     if cols_c >= 1 and rows_c >= 1:
                         cnt = cols_c * rows_c
                         if best is None or cnt > best["count"]:
-                            best = {"w": w_p_c, "h": h_p_c, "cols": cols_c, "rows": rows_c, "count": cnt, "g": g_c, "m": m_c}
-        w_p, h_p, cols, rows, count, g_mm, m_mm = best["w"], best["h"], best["cols"], best["rows"], best["count"], best["g"], best["m"]
-
-    pw = mm_to_px(w_p)
-    ph = mm_to_px(h_p)
-    iw = mm_to_px(id_w_mm)
-    ih = mm_to_px(id_h_mm)
-    m = mm_to_px(m_mm)
-    g = mm_to_px(g_mm)
-
-    block_w = cols * iw + (cols - 1) * g
-    block_h = rows * ih + (rows - 1) * g
-    start_x = max(0, (pw - block_w) // 2)
-    start_y = max(0, (ph - block_h) // 2)
-
-    positions = []
-    for idx in range(count):
-        r = idx // cols
-        c = idx % cols
-        positions.append((start_x + c * (iw + g), start_y + r * (ih + g)))
+                            best = {"paper_w": w_p, "paper_h": h_p, "cols": cols_c, "rows": rows_c,
+                                    "count": cnt, "gap": g, "margin": m}
+        if best:
+            pw, ph = best["paper_w"], best["paper_h"]
+            cols, rows, count = best["cols"], best["rows"], best["count"]
+            gap, margin = best["gap"], best["margin"]
+        else:
+            pw, ph = paper_w_mm, paper_h_mm
+            cols, rows, count = 1, 1
+            gap, margin = 1.0, 2.0
 
     return {
-        "paper": (pw, ph), "id": (iw, ih), "margin": m, "gap": g,
-        "cols": cols, "rows": rows, "count": count,
-        "positions": positions, "sheet_color": (255, 255, 255),
-        "paper_w_mm": w_p, "paper_h_mm": h_p
+        "paper": (mm_to_px(pw), mm_to_px(ph)),
+        "paper_w_mm": pw,
+        "paper_h_mm": ph,
+        "id_w_mm": id_w_mm,
+        "id_h_mm": id_h_mm,
+        "id_w_px": mm_to_px(id_w_mm),
+        "id_h_px": mm_to_px(id_h_mm),
+        "cols": cols,
+        "rows": rows,
+        "count": count,
+        "gap_px": mm_to_px(gap),
+        "margin_px": mm_to_px(margin),
     }
 
 
-def compute_layout_grid(id_w_mm, id_h_mm, rows, cols):
-    iw = mm_to_px(id_w_mm); ih = mm_to_px(id_h_mm)
-    m = mm_to_px(4.0); g = mm_to_px(2.0)
-    pw = cols * iw + (cols - 1) * g + 2 * m
-    ph = rows * ih + (rows - 1) * g + 2 * m
-    start_x = m; start_y = m
-    positions = []
-    for idx in range(rows * cols):
-        r = idx // cols
-        c = idx % cols
-        positions.append((start_x + c * (iw + g), start_y + r * (ih + g)))
+def compute_layout_grid(id_w_mm, id_h_mm, rows, cols, paper_w_mm=102, paper_h_mm=152, gap_mm=1.0, margin_mm=3.0):
+    """
+    自定义网格排版：绑定真实相纸并计算占用尺寸与越界检测
+    """
+    # 自动评估横放/竖放相纸
+    req_w_mm = cols * id_w_mm + (cols - 1) * gap_mm + 2 * margin_mm
+    req_h_mm = rows * id_h_mm + (rows - 1) * gap_mm + 2 * margin_mm
+
+    # 尝试目标相纸的横竖方向
+    fits = False
+    best_pw, best_ph = paper_w_mm, paper_h_mm
+    for pw, ph in [(paper_w_mm, paper_h_mm), (paper_h_mm, paper_w_mm)]:
+        if req_w_mm <= pw and req_h_mm <= ph:
+            fits = True
+            best_pw, best_ph = pw, ph
+            break
+
+    if not fits:
+        # 如果超出，选择面积最接近的方向
+        best_pw, best_ph = (max(paper_w_mm, paper_h_mm), min(paper_w_mm, paper_h_mm)) if req_w_mm > req_h_mm else (min(paper_w_mm, paper_h_mm), max(paper_w_mm, paper_h_mm))
+
     return {
-        "paper": (pw, ph), "id": (iw, ih), "margin": m, "gap": g,
-        "cols": cols, "rows": rows, "count": rows * cols,
-        "positions": positions, "sheet_color": (255, 255, 255),
-        "paper_w_mm": int(round(pw / PX_PER_MM)), "paper_h_mm": int(round(ph / PX_PER_MM))
+        "paper": (mm_to_px(best_pw), mm_to_px(best_ph)),
+        "paper_w_mm": best_pw,
+        "paper_h_mm": best_ph,
+        "id_w_mm": id_w_mm,
+        "id_h_mm": id_h_mm,
+        "id_w_px": mm_to_px(id_w_mm),
+        "id_h_px": mm_to_px(id_h_mm),
+        "cols": cols,
+        "rows": rows,
+        "count": rows * cols,
+        "gap_px": mm_to_px(gap_mm),
+        "margin_px": mm_to_px(margin_mm),
+        "fits": fits,
+        "req_w_mm": round(req_w_mm, 1),
+        "req_h_mm": round(req_h_mm, 1),
     }
 
 
-# ============================================================ 常用混排方案
-def compose_mixed_sheet(id_1in, id_2in, mix_type="6in_4_4", cut_lines=True, add_text=True):
-    if mix_type == "5in_2_4":
-        pw, ph = mm_to_px(127), mm_to_px(89)
-        sheet = Image.new("RGB", (pw, ph), (255, 255, 255))
-        draw = ImageDraw.Draw(sheet)
-
-        w_2in, h_2in = id_2in.size
-        w_1in, h_1in = id_1in.size
-        gap = int(round(1.5 * PX_PER_MM))
-        border_c = (200, 200, 200)
-
-        total_w = (w_2in * 2 + gap) + gap * 2 + (w_1in * 2 + gap)
-        ox = max(20, (pw - total_w) // 2)
-
-        # 2张二寸
-        oy_2in = (ph - h_2in) // 2
-        for c in range(2):
-            x = ox + c * (w_2in + gap)
-            sheet.paste(id_2in, (x, oy_2in))
-            draw.rectangle([x, oy_2in, x + w_2in - 1, oy_2in + h_2in - 1], outline=border_c, width=1)
-            if cut_lines:
-                _draw_dashed_rect(draw, x, oy_2in, w_2in, h_2in)
-
-        # 4张一寸
-        ox_1in = ox + (w_2in * 2 + gap) + gap * 2
-        oy_1in = (ph - (h_1in * 2 + gap)) // 2
-        for r in range(2):
-            for c in range(2):
-                x = ox_1in + c * (w_1in + gap)
-                y = oy_1in + r * (h_1in + gap)
-                sheet.paste(id_1in, (x, y))
-                draw.rectangle([x, y, x + w_1in - 1, y + h_1in - 1], outline=border_c, width=1)
-                if cut_lines:
-                    _draw_dashed_rect(draw, x, y, w_1in, h_1in)
-
-        if add_text:
-            font = _load_font(16)
-            label = "5寸冲印混排 · 2张二寸(35×49mm) + 4张一寸(25×35mm)"
-            bbox = draw.textbbox((0, 0), label, font=font)
-            tw = bbox[2] - bbox[0]
-            draw.text(((pw - tw) // 2, 10), label, fill=(60, 60, 60), font=font)
-
-        info = "5寸混排完成 · 2张二寸 + 4张一寸 · 纸张 1500×1051 px"
-        return sheet, info
-
-    else:
-        pw, ph = mm_to_px(102), mm_to_px(152)
-        sheet = Image.new("RGB", (pw, ph), (255, 255, 255))
-        draw = ImageDraw.Draw(sheet)
-
-        w_2in, h_2in = id_2in.size
-        w_1in, h_1in = id_1in.size
-        gap = int(round(1.0 * PX_PER_MM))
-        border_c = (200, 200, 200)
-
-        ox_2in = (pw - (w_2in * 2 + gap)) // 2
-        oy_2in = 70
-        for r in range(2):
-            for c in range(2):
-                x = ox_2in + c * (w_2in + gap)
-                y = oy_2in + r * (h_2in + gap)
-                sheet.paste(id_2in, (x, y))
-                draw.rectangle([x, y, x + w_2in - 1, y + h_2in - 1], outline=border_c, width=1)
-                if cut_lines:
-                    _draw_dashed_rect(draw, x, y, w_2in, h_2in)
-
-        ox_1in = (pw - (w_1in * 4)) // 2
-        oy_1in = oy_2in + 2 * (h_2in + gap) + 24
-        for c in range(4):
-            x = ox_1in + c * w_1in
-            y = oy_1in
-            sheet.paste(id_1in, (x, y))
-            draw.rectangle([x, y, x + w_1in - 1, y + h_1in - 1], outline=border_c, width=1)
-            if cut_lines:
-                _draw_dashed_rect(draw, x, y, w_1in, h_1in)
-
-        if add_text:
-            font = _load_font(16)
-            label = "6寸冲印混排 · 4张二寸(35×49mm) + 4张一寸(25×35mm)"
-            bbox = draw.textbbox((0, 0), label, font=font)
-            tw = bbox[2] - bbox[0]
-            draw.text(((pw - tw) // 2, 18), label, fill=(60, 60, 60), font=font)
-
-        info = "6寸混排完成 · 4张二寸 + 4张一寸 · 纸张 1205×1795 px"
-        return sheet, info
-
-
-def _draw_dashed_rect(draw, x, y, w, h, color=(200, 200, 200), dash=6, gap=4):
-    cur_x = x
-    while cur_x < x + w:
-        draw.line([(cur_x, y), (min(cur_x + dash, x + w), y)], fill=color, width=1)
-        draw.line([(cur_x, y + h - 1), (min(cur_x + dash, x + w), y + h - 1)], fill=color, width=1)
-        cur_x += dash + gap
-    cur_y = y
-    while cur_y < y + h:
-        draw.line([(x, cur_y), (x, min(cur_y + dash, y + h))], fill=color, width=1)
-        draw.line([(x + w - 1, cur_y), (x + w - 1, min(cur_y + dash, y + h))], fill=color, width=1)
-        cur_y += dash + gap
+def _draw_dashed_rect(draw, x1, y1, x2, y2, color=(190, 190, 190), dash=8, space=5):
+    for x in range(x1, x2, dash + space):
+        draw.line([(x, y1), (min(x + dash, x2), y1)], fill=color, width=1)
+        draw.line([(x, y2), (min(x + dash, x2), y2)], fill=color, width=1)
+    for y in range(y1, y2, dash + space):
+        draw.line([(x1, y), (x1, min(y + dash, y2))], fill=color, width=1)
+        draw.line([(x2, y), (x2, min(y + dash, y2))], fill=color, width=1)
 
 
 def compose_sheet(id_photo, layout, sheet_color=(255, 255, 255),
                   size_name="", size_dims="", cut_lines=True):
     pw, ph = layout["paper"]
-    iw, ih = layout["id"]
+    iw, ih = layout["id_w_px"], layout["id_h_px"]
+    cols, rows = layout["cols"], layout["rows"]
+    gap = layout["gap_px"]
+
     sheet = Image.new("RGB", (pw, ph), sheet_color)
     draw = ImageDraw.Draw(sheet)
 
-    border_color = (210, 210, 210)
-    for (x, y) in layout["positions"]:
-        x, y = int(x), int(y)
-        sheet.paste(id_photo, (x, y))
-        draw.rectangle([x, y, x + iw - 1, y + ih - 1], outline=border_color, width=1)
-        if cut_lines:
-            _draw_dashed_rect(draw, x, y, iw, ih)
+    grid_w = cols * iw + (cols - 1) * gap
+    grid_h = rows * ih + (rows - 1) * gap
+    ox = (pw - grid_w) // 2
+    oy = (ph - grid_h) // 2
 
-    if cut_lines and layout["count"] > 1:
-        mark_c = (170, 170, 170)
-        for (x, y) in layout["positions"]:
-            draw.line([(x, y - 8), (x, y)], fill=mark_c, width=1)
-            draw.line([(x + iw, y - 8), (x + iw, y)], fill=mark_c, width=1)
-            draw.line([(x - 8, y), (x, y)], fill=mark_c, width=1)
-            draw.line([(x - 8, y + ih), (x, y + ih)], fill=mark_c, width=1)
+    # 1. 贴照片 + 外框
+    border_color = (200, 200, 200)
+    for r in range(rows):
+        for c in range(cols):
+            x = ox + c * (iw + gap)
+            y = oy + r * (ih + gap)
+            sheet.paste(id_photo, (x, y))
 
-    if size_name or size_dims:
-        label = f"{size_name} {size_dims}".strip()
-        if label:
-            font = _load_font(16)
-            bbox = draw.textbbox((0, 0), label, font=font)
-            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-            pad = 5
-            bar_x = (pw - tw) // 2
-            bar_y = 10
-            draw.rectangle([bar_x - pad, bar_y - pad, bar_x + tw + pad, bar_y + th + pad],
-                           fill=(245, 245, 245), outline=(210, 210, 210), width=1)
-            draw.text((bar_x, bar_y), label, fill=(50, 50, 50), font=font)
+            # 浅灰 1px 细外边框
+            draw.rectangle([x, y, x + iw - 1, y + ih - 1], outline=border_color, width=1)
+
+            # 裁切虚线框
+            if cut_lines:
+                _draw_dashed_rect(draw, x, y, x + iw - 1, y + ih - 1, color=(185, 185, 185))
+
+    # 2. 十字裁切延伸线
+    if cut_lines:
+        mark_color = (160, 160, 160)
+        mark_len = 16
+        for c in range(cols + 1):
+            x = ox + c * (iw + gap) - (gap // 2 if c > 0 and c < cols else 0)
+            draw.line([(x, oy - mark_len), (x, oy - 2)], fill=mark_color, width=1)
+            draw.line([(x, oy + grid_h + 2), (x, oy + grid_h + mark_len)], fill=mark_color, width=1)
+        for r in range(rows + 1):
+            y = oy + r * (ih + gap) - (gap // 2 if r > 0 and r < rows else 0)
+            draw.line([(ox - mark_len, y), (ox - 2, y)], fill=mark_color, width=1)
+            draw.line([(ox + grid_w + 2, y), (ox + grid_w + mark_len, y)], fill=mark_color, width=1)
+
+    # 3. 顶部相纸与尺寸规范水印
+    if size_name:
+        txt = f"{size_name} · {size_dims} · 300DPI 标准冲印"
+        try:
+            draw.text((ox, max(4, oy - 20)), txt, fill=(150, 150, 150))
+        except Exception:
+            pass
 
     return sheet
 
 
-def _load_font(size):
-    candidates = [
-        "/System/Library/Fonts/PingFang.ttc",
-        "/System/Library/Fonts/STHeiti Light.ttc",
-        "C:/Windows/Fonts/msyh.ttc",
-        "C:/Windows/Fonts/simhei.ttf",
-        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-    ]
-    for path in candidates:
-        if os.path.exists(path):
-            try:
-                return ImageFont.truetype(path, size)
-            except Exception:
-                continue
-    return ImageFont.load_default()
+# ============================================================ 照相馆黄金对称混排冲印
+def compose_mixed_sheet(id_1in, id_2in, mix_type="6in_4_6", cut_lines=True, add_text=True):
+    """
+    照相馆金牌黄金分割混排：左右对称、上下呼应、严密对齐
+    """
+    # 二寸 (35x49mm -> 413x579px)
+    w_2in, h_2in = mm_to_px(35), mm_to_px(49)
+    # 一寸 (25x35mm -> 295x413px)
+    w_1in, h_1in = mm_to_px(25), mm_to_px(35)
+
+    gap = mm_to_px(1.0) # 12px
+    gap_group = mm_to_px(3.0) # 35px
+    border_color = (200, 200, 200)
+
+    if mix_type == "5in_2_4":
+        # 5寸横放 (127 x 89 mm -> 1500 x 1051 px)
+        # 左边 2张二寸 (垂直居中), 右边 4张一寸 (2x2 垂直居中)
+        pw, ph = mm_to_px(127), mm_to_px(89)
+        sheet = Image.new("RGB", (pw, ph), (255, 255, 255))
+        draw = ImageDraw.Draw(sheet)
+
+        w_left = w_2in * 2 + gap # 413*2 + 12 = 838px
+        h_left = h_2in # 579px
+
+        w_right = w_1in * 2 + gap # 295*2 + 12 = 602px
+        h_right = h_1in * 2 + gap # 413*2 + 12 = 838px
+
+        total_w = w_left + gap_group + w_right
+        ox = (pw - total_w) // 2
+
+        # 左侧 2张二寸
+        oy_left = (ph - h_left) // 2
+        for c in range(2):
+            x = ox + c * (w_2in + gap)
+            y = oy_left
+            sheet.paste(id_2in, (x, y))
+            draw.rectangle([x, y, x + w_2in - 1, y + h_2in - 1], outline=border_color, width=1)
+            if cut_lines:
+                _draw_dashed_rect(draw, x, y, x + w_2in - 1, y + h_2in - 1)
+
+        # 右侧 4张一寸 (2x2)
+        ox_right = ox + w_left + gap_group
+        oy_right = (ph - h_right) // 2
+        for r in range(2):
+            for c in range(2):
+                x = ox_right + c * (w_1in + gap)
+                y = oy_right + r * (h_1in + gap)
+                sheet.paste(id_1in, (x, y))
+                draw.rectangle([x, y, x + w_1in - 1, y + h_1in - 1], outline=border_color, width=1)
+                if cut_lines:
+                    _draw_dashed_rect(draw, x, y, x + w_1in - 1, y + h_1in - 1)
+
+        info = f"5寸黄金混排 · 2张二寸 + 4张一寸 · {pw}×{ph} px"
+        return sheet, info
+
+    elif mix_type == "6in_4_6":
+        # 6寸横放 (152 x 102 mm -> 1795 x 1205 px) - 照相馆最热销版
+        # 左边 4张二寸 (2x2), 右边 6张一寸 (3x2)
+        pw, ph = mm_to_px(152), mm_to_px(102)
+        sheet = Image.new("RGB", (pw, ph), (255, 255, 255))
+        draw = ImageDraw.Draw(sheet)
+
+        w_left = w_2in * 2 + gap # 413*2 + 10 = 836px
+        h_left = h_2in * 2 + gap # 579*2 + 10 = 1168px
+
+        w_right = w_1in * 3 + gap * 2 # 295*3 + 20 = 905px
+        h_right = h_1in * 2 + gap # 413*2 + 10 = 836px
+
+        total_w = w_left + gap_group + w_right
+        ox = max(mm_to_px(2.0), (pw - total_w) // 2)
+
+        # 左边 4张二寸 (2x2 居中)
+        oy_left = (ph - h_left) // 2
+        for r in range(2):
+            for c in range(2):
+                x = ox + c * (w_2in + gap)
+                y = oy_left + r * (h_2in + gap)
+                sheet.paste(id_2in, (x, y))
+                draw.rectangle([x, y, x + w_2in - 1, y + h_2in - 1], outline=border_color, width=1)
+                if cut_lines:
+                    _draw_dashed_rect(draw, x, y, x + w_2in - 1, y + h_2in - 1)
+
+        # 右边 6张一寸 (3x2 居中)
+        ox_right = ox + w_left + gap_group
+        oy_right = (ph - h_right) // 2
+        for r in range(2):
+            for c in range(3):
+                x = ox_right + c * (w_1in + gap)
+                y = oy_right + r * (h_1in + gap)
+                sheet.paste(id_1in, (x, y))
+                draw.rectangle([x, y, x + w_1in - 1, y + h_1in - 1], outline=border_color, width=1)
+                if cut_lines:
+                    _draw_dashed_rect(draw, x, y, x + w_1in - 1, y + h_1in - 1)
+
+        info = f"6寸金牌混排 · 4张二寸 + 6张一寸 · {pw}×{ph} px"
+        return sheet, info
+
+    elif mix_type == "6in_2_8":
+        # 6寸横放 (152 x 102 mm -> 1795 x 1205 px)
+        # 左边 2张二寸 (1x2), 右边 8张一寸 (4x2)
+        pw, ph = mm_to_px(152), mm_to_px(102)
+        sheet = Image.new("RGB", (pw, ph), (255, 255, 255))
+        draw = ImageDraw.Draw(sheet)
+
+        w_left = w_2in # 413px
+        h_left = h_2in * 2 + gap # 1168px
+
+        w_right = w_1in * 4 + gap * 3 # 295*4 + 30 = 1210px
+        h_right = h_1in * 2 + gap # 836px
+
+        total_w = w_left + gap_group + w_right
+        ox = max(mm_to_px(3.0), (pw - total_w) // 2)
+
+        # 左边 2张二寸
+        oy_left = (ph - h_left) // 2
+        for r in range(2):
+            x = ox
+            y = oy_left + r * (h_2in + gap)
+            sheet.paste(id_2in, (x, y))
+            draw.rectangle([x, y, x + w_2in - 1, y + h_2in - 1], outline=border_color, width=1)
+            if cut_lines:
+                _draw_dashed_rect(draw, x, y, x + w_2in - 1, y + h_2in - 1)
+
+        # 右边 8张一寸 (4x2)
+        ox_right = ox + w_left + gap_group
+        oy_right = (ph - h_right) // 2
+        for r in range(2):
+            for c in range(4):
+                x = ox_right + c * (w_1in + gap)
+                y = oy_right + r * (h_1in + gap)
+                sheet.paste(id_1in, (x, y))
+                draw.rectangle([x, y, x + w_1in - 1, y + h_1in - 1], outline=border_color, width=1)
+                if cut_lines:
+                    _draw_dashed_rect(draw, x, y, x + w_1in - 1, y + h_1in - 1)
+
+        info = f"6寸混排 · 2张二寸 + 8张一寸 · {pw}×{ph} px"
+        return sheet, info
+
+    else: # 6in_4_4 舒适留白版
+        pw, ph = mm_to_px(152), mm_to_px(102)
+        sheet = Image.new("RGB", (pw, ph), (255, 255, 255))
+        draw = ImageDraw.Draw(sheet)
+
+        w_left = w_2in * 2 + gap
+        h_left = h_2in * 2 + gap
+        w_right = w_1in * 2 + gap
+        h_right = h_1in * 2 + gap
+
+        total_w = w_left + gap_group + w_right
+        ox = (pw - total_w) // 2
+
+        oy_left = (ph - h_left) // 2
+        for r in range(2):
+            for c in range(2):
+                x = ox + c * (w_2in + gap)
+                y = oy_left + r * (h_2in + gap)
+                sheet.paste(id_2in, (x, y))
+                draw.rectangle([x, y, x + w_2in - 1, y + h_2in - 1], outline=border_color, width=1)
+                if cut_lines:
+                    _draw_dashed_rect(draw, x, y, x + w_2in - 1, y + h_2in - 1)
+
+        ox_right = ox + w_left + gap_group
+        oy_right = (ph - h_right) // 2
+        for r in range(2):
+            for c in range(2):
+                x = ox_right + c * (w_1in + gap)
+                y = oy_right + r * (h_1in + gap)
+                sheet.paste(id_1in, (x, y))
+                draw.rectangle([x, y, x + w_1in - 1, y + h_1in - 1], outline=border_color, width=1)
+                if cut_lines:
+                    _draw_dashed_rect(draw, x, y, x + w_1in - 1, y + h_1in - 1)
+
+        info = f"6寸混排 (舒适版) · 4张二寸 + 4张一寸 · {pw}×{ph} px"
+        return sheet, info
+
+
+# ============================================================ 自由多尺寸自定义混排装箱引擎
+def compose_custom_mixed_sheet(images_dict, counts_dict, paper_dict, cut_lines=True):
+    """
+    images_dict: {"1in": img, "2in": img, "s_1in": img, "l_2in": img}
+    counts_dict: {"1in": int, "2in": int, ...}
+    paper_dict: {"w_mm": int, "h_mm": int, "name": str}
+    """
+    pw_mm, ph_mm = paper_dict["w_mm"], paper_dict["h_mm"]
+    # 尺寸规格定义
+    dims_map = {
+        "1in": (25, 35, "一寸"),
+        "2in": (35, 49, "二寸"),
+        "s_1in": (22, 32, "小一寸"),
+        "l_2in": (35, 53, "大二寸"),
+    }
+
+    # 展开所有需要排列的图块
+    items = []
+    for k, count in counts_dict.items():
+        if count > 0 and k in images_dict and k in dims_map:
+            w_mm, h_mm, tag = dims_map[k]
+            img = images_dict[k]
+            for _ in range(count):
+                items.append({"w_mm": w_mm, "h_mm": h_mm, "img": img, "tag": tag})
+
+    if not items:
+        # 空相纸
+        pw_px, ph_px = mm_to_px(pw_mm), mm_to_px(ph_mm)
+        sheet = Image.new("RGB", (pw_px, ph_px), (255, 255, 255))
+        return sheet, "未选择任何混排照片数量", True
+
+    # 尝试横放和竖放两种相纸
+    best_plan = None
+    for pw_m, ph_m in [(max(pw_mm, ph_mm), min(pw_mm, ph_mm)), (min(pw_mm, ph_mm), max(pw_mm, ph_mm))]:
+        margin_m = 3.0
+        gap_m = 1.0
+        pw_p, ph_p = mm_to_px(pw_m), mm_to_px(ph_m)
+        margin_p = mm_to_px(margin_m)
+        gap_p = mm_to_px(gap_m)
+
+        # 排序：先按高度降序，再按宽度降序
+        sorted_items = sorted(items, key=lambda x: (x["h_mm"], x["w_mm"]), reverse=True)
+
+        placements = []
+        cur_x = margin_p
+        cur_y = margin_p
+        row_h = 0
+        fits = True
+
+        for it in sorted_items:
+            w_px = mm_to_px(it["w_mm"])
+            h_px = mm_to_px(it["h_mm"])
+
+            if cur_x + w_px > pw_p - margin_p:
+                # 换行
+                cur_x = margin_p
+                cur_y += row_h + gap_p
+                row_h = 0
+
+            if cur_y + h_px > ph_p - margin_p:
+                fits = False
+                break
+
+            placements.append((cur_x, cur_y, w_px, h_px, it["img"], it["tag"]))
+            cur_x += w_px + gap_p
+            if h_px > row_h:
+                row_h = h_px
+
+        total_item_area = sum(mm_to_px(it["w_mm"]) * mm_to_px(it["h_mm"]) for it in items)
+        paper_area = pw_p * ph_p
+        util = (total_item_area / paper_area) * 100.0 if paper_area > 0 else 0
+
+        plan = {
+            "pw_px": pw_p, "ph_px": ph_p, "pw_mm": pw_m, "ph_mm": ph_m,
+            "placements": placements, "fits": fits, "util": util, "count": len(placements),
+            "total_req": len(items)
+        }
+
+        if fits:
+            if best_plan is None or util > best_plan["util"]:
+                best_plan = plan
+        else:
+            if best_plan is None or plan["count"] > best_plan["count"]:
+                best_plan = plan
+
+    # 绘制相纸
+    sheet = Image.new("RGB", (best_plan["pw_px"], best_plan["ph_px"]), (255, 255, 255))
+    draw = ImageDraw.Draw(sheet)
+    border_color = (200, 200, 200)
+
+    for x, y, w_px, h_px, img, tag in best_plan["placements"]:
+        if img:
+            sheet.paste(img, (x, y))
+        draw.rectangle([x, y, x + w_px - 1, y + h_px - 1], outline=border_color, width=1)
+        if cut_lines:
+            _draw_dashed_rect(draw, x, y, x + w_px - 1, y + h_px - 1)
+
+    if best_plan["fits"]:
+        info = f"自定义混排成功 · {best_plan['pw_mm']}×{best_plan['ph_mm']}mm (利用率 {best_plan['util']:.1f}%)"
+    else:
+        info = f"⚠️ 超出相纸容量！已排 {best_plan['count']}/{best_plan['total_req']} 张，请减少数量或换大相纸"
+
+    return sheet, info, best_plan["fits"]
