@@ -4,8 +4,8 @@ idphoto_core.py — 证件照换底色 + 排版打印 核心引擎（数据驱�
 =========================================================================
 - 智能抠图：SOTA 级 RMBG-1.4 高清发丝抠图模型（1024x1024 亚像素精度，彻底剔除暗斑）
 - 照相馆标准证件照构图：头顶留白 8%，人像底部贴死画幅边缘（绝无悬空底边）
-- 高密度冲印排版：智能相纸朝向自适应（6寸排8张二寸/16张一寸，5寸排10张一寸/4张二寸）
-- 常用混排冲印：6寸相纸 (4张二寸 + 4张一寸，全正立直放，不旋转)
+- 行业规范冲印排版：智能相纸朝向与安全边距计算（6寸8张二寸/16张一寸，5寸9张一寸/4张二寸）
+- 常用混排冲印：6寸 (4张2寸+4张1寸) / 5寸 (2张2寸+4张1寸)，全正立直放
 """
 
 import os
@@ -78,12 +78,8 @@ BUILTIN_PAPERS = [
     ("p6", "6寸 (102×152mm)", 102, 152),
     ("p5", "5寸 (89×127mm)", 89, 127),
     ("p7", "7寸 (127×178mm)", 127, 178),
-    ("3R", "3R (89×127mm)", 89, 127),
-    ("4R", "4R (102×152mm)", 102, 152),
-    ("5R", "5R (127×178mm)", 127, 178),
     ("A4", "A4 (210×297mm)", 210, 297),
     ("A5", "A5 (148×210mm)", 148, 210),
-    ("A6", "A6 (105×148mm)", 105, 148),
 ]
 
 
@@ -241,7 +237,6 @@ class Matting:
         is_rmbg = "rmbg" in os.path.basename(self.model_path).lower()
 
         if is_rmbg:
-            # RMBG 1.4: 1024x1024 输入，亚像素发丝精细度
             target = 1024
             resized = image.resize((target, target), Image.BILINEAR).convert("RGB")
             arr = np.asarray(resized, dtype=np.float32) / 255.0
@@ -257,7 +252,6 @@ class Matting:
                 alpha_norm = alpha_raw
             alpha = Image.fromarray((alpha_norm * 255).astype(np.uint8), mode="L").resize((orig_w, orig_h), Image.LANCZOS)
         else:
-            # Hivision MODNet: 512x512 等比填充
             target = 512
             scale = target / max(orig_w, orig_h)
             new_w = max(1, int(round(orig_w * scale)))
@@ -279,7 +273,6 @@ class Matting:
             alpha_crop = alpha_full[pad_top:pad_top + new_h, pad_left:pad_left + new_w]
             alpha = Image.fromarray(alpha_crop, mode="L").resize((orig_w, orig_h), Image.LANCZOS)
 
-        # 边缘平滑
         alpha = alpha.filter(ImageFilter.MaxFilter(3)).filter(ImageFilter.MinFilter(3))
         rgba = image.convert("RGBA")
         rgba.putalpha(alpha)
@@ -289,9 +282,9 @@ class Matting:
 # ============================================================ 照相馆标准证件照黄金构图
 def create_standard_id_photo(rgba, target_w, target_h, bg_rgb):
     """
-    照相馆标准证件照构图规则：
-    1. 人像底部（胸部/肩膀）绝对贴死目标相片底部边缘（y_bottom = target_h，绝不留悬空底边）
-    2. 头顶距离相片顶部留白 8% (y_top = target_h * 0.08)
+    照相馆规范构图：
+    1. 人像底部（胸部/衣服）绝对贴死相片下边缘（y_bottom = target_h，绝无悬空底边）
+    2. 头顶距离相片顶部留白 8%
     3. 人像高度占整个相片高度的 92%
     4. 水平方向按头部与人像中心轴对称居中
     """
@@ -306,7 +299,6 @@ def create_standard_id_photo(rgba, target_w, target_h, bg_rgb):
     y_min, y_max = np.where(rows)[0][[0, -1]]
     x_min, x_max = np.where(cols)[0][[0, -1]]
 
-    # 取头部区域 (顶部 1/3) 计算真实人脸中心线
     head_h = max(1, (y_max - y_min) // 3)
     head_rows = alpha_arr[y_min : y_min + head_h, :]
     head_cols = np.any(head_rows > 45, axis=0)
@@ -317,12 +309,9 @@ def create_standard_id_photo(rgba, target_w, target_h, bg_rgb):
         x_center = (x_min + x_max) / 2.0
 
     person_h = max(1, y_max - y_min)
-
-    # 目标人像高度（占总画幅 92%）
     target_person_h = int(round(target_h * 0.92))
     scale = target_person_h / person_h
 
-    # 等比缩放原图
     scaled_w = max(1, int(round(orig_w * scale)))
     scaled_h = max(1, int(round(orig_h * scale)))
     scaled_rgba = rgba.resize((scaled_w, scaled_h), Image.LANCZOS)
@@ -330,10 +319,7 @@ def create_standard_id_photo(rgba, target_w, target_h, bg_rgb):
     scaled_x_center = int(round(x_center * scale))
     scaled_y_min = int(round(y_min * scale))
 
-    # 创建底色画布
     canvas = Image.new("RGB", (target_w, target_h), bg_rgb if bg_rgb else (255, 255, 255))
-
-    # 贴图位置：头顶在 8% 处，人像底部贴死画幅底边
     paste_y = int(round(target_h * 0.08)) - scaled_y_min
     paste_x = (target_w // 2) - scaled_x_center
 
@@ -366,40 +352,50 @@ def prepare_id_photo(image, id_w_px, id_h_px, bg_rgb, matting=None):
     return _center_crop_fill(image.convert("RGB"), id_w_px, id_h_px)
 
 
-# ============================================================ 照相馆冲印实战高密度排版引擎
-def compute_layout(paper_w_mm, paper_h_mm, id_w_mm, id_h_mm, order="row"):
+# ============================================================ 冲印标准排版引擎
+def compute_layout(paper_w_mm, paper_h_mm, id_w_mm, id_h_mm):
     """
-    自动评估竖放/横放相纸，以最大化冲印张数为目标计算最优排版（照相馆实战标准）。
-    例如：
-    - 6寸 (102x152mm) 排 二寸 (35x49mm) ➔ 8张 (4列x2行，横向满塞)
-    - 6寸 (102x152mm) 排 一寸 (25x35mm) ➔ 16张 (4列x4行)
-    - 5寸 (89x127mm)  排 一寸 (25x35mm) ➔ 10张 (5列x2行) 或 9张 (3列x3行)
+    照相馆规范冲印排版参数：
+    - 6寸 (102x152mm): 二寸 8张 (4x2横版) / 一寸 16张 (4x4竖版)
+    - 5寸 (89x127mm):  一寸 9张 (3x3舒适版) / 二寸 4张 (2x2舒适版)
+    - 7寸 (127x178mm): 一寸 16张 (4x4) / 二寸 9张 (3x3)
     """
-    best = None
-    # 尝试两种相纸朝向 (竖版 / 横版)
-    for (w_p, h_p) in [(paper_w_mm, paper_h_mm), (paper_h_mm, paper_w_mm)]:
-        for g in [0.8, 0.5, 0.0]:
-            for m in [1.5, 1.0, 0.5]:
-                cols = int((w_p - 2 * m + g) // (id_w_mm + g))
-                rows = int((h_p - 2 * m + g) // (id_h_mm + g))
-                if cols >= 1 and rows >= 1:
-                    cnt = cols * rows
-                    if best is None or cnt > best["count"]:
-                        best = {
-                            "paper_w_mm": w_p, "paper_h_mm": h_p,
-                            "cols": cols, "rows": rows, "count": cnt,
-                            "margin_mm": m, "gap_mm": g
-                        }
+    # 常用标准预设速查表 (相纸宽, 相纸高, 列数, 行数, gap_mm, margin_mm)
+    standards = {
+        (102, 152, 25, 35): (102, 152, 4, 4, 0.8, 2.5),   # 6寸排一寸: 16张
+        (102, 152, 35, 49): (152, 102, 4, 2, 1.0, 3.0),   # 6寸排二寸: 8张
+        (102, 152, 35, 45): (152, 102, 4, 2, 1.0, 3.0),   # 6寸排小二寸: 8张
+        (102, 152, 33, 48): (152, 102, 4, 2, 1.0, 3.0),   # 6寸排大一寸: 8张
+        (89, 127, 25, 35):  (89, 127, 3, 3, 1.5, 4.0),    # 5寸排一寸: 9张舒适版
+        (89, 127, 35, 49):  (89, 127, 2, 2, 2.0, 5.0),    # 5寸排二寸: 4张舒适版
+        (127, 178, 25, 35): (127, 178, 4, 4, 1.5, 4.0),   # 7寸排一寸: 16张
+        (127, 178, 35, 49): (127, 178, 3, 3, 1.5, 4.0),   # 7寸排二寸: 9张
+    }
 
-    pw = mm_to_px(best["paper_w_mm"])
-    ph = mm_to_px(best["paper_h_mm"])
+    key = (min(paper_w_mm, paper_h_mm), max(paper_w_mm, paper_h_mm), id_w_mm, id_h_mm)
+    if key in standards:
+        w_p, h_p, cols, rows, g_mm, m_mm = standards[key]
+        count = cols * rows
+    else:
+        # 通用自适应评估
+        best = None
+        for (w_p_c, h_p_c) in [(paper_w_mm, paper_h_mm), (paper_h_mm, paper_w_mm)]:
+            for g_c in [1.0, 0.5]:
+                for m_c in [3.0, 2.0, 1.0]:
+                    cols_c = int((w_p_c - 2 * m_c + g_c) // (id_w_mm + g_c))
+                    rows_c = int((h_p_c - 2 * m_c + g_c) // (id_h_mm + g_c))
+                    if cols_c >= 1 and rows_c >= 1:
+                        cnt = cols_c * rows_c
+                        if best is None or cnt > best["count"]:
+                            best = {"w": w_p_c, "h": h_p_c, "cols": cols_c, "rows": rows_c, "count": cnt, "g": g_c, "m": m_c}
+        w_p, h_p, cols, rows, count, g_mm, m_mm = best["w"], best["h"], best["cols"], best["rows"], best["count"], best["g"], best["m"]
+
+    pw = mm_to_px(w_p)
+    ph = mm_to_px(h_p)
     iw = mm_to_px(id_w_mm)
     ih = mm_to_px(id_h_mm)
-    m = mm_to_px(best["margin_mm"])
-    g = mm_to_px(best["gap_mm"])
-    cols = best["cols"]
-    rows = best["rows"]
-    count = best["count"]
+    m = mm_to_px(m_mm)
+    g = mm_to_px(g_mm)
 
     block_w = cols * iw + (cols - 1) * g
     block_h = rows * ih + (rows - 1) * g
@@ -408,45 +404,126 @@ def compute_layout(paper_w_mm, paper_h_mm, id_w_mm, id_h_mm, order="row"):
 
     positions = []
     for idx in range(count):
-        if order == "col":
-            r = idx % rows
-            c = idx // rows
-        else:
-            r = idx // cols
-            c = idx % cols
+        r = idx // cols
+        c = idx % cols
         positions.append((start_x + c * (iw + g), start_y + r * (ih + g)))
 
     return {
         "paper": (pw, ph), "id": (iw, ih), "margin": m, "gap": g,
         "cols": cols, "rows": rows, "count": count,
-        "order": order, "positions": positions,
-        "sheet_color": (255, 255, 255),
-        "paper_w_mm": best["paper_w_mm"], "paper_h_mm": best["paper_h_mm"]
+        "positions": positions, "sheet_color": (255, 255, 255),
+        "paper_w_mm": w_p, "paper_h_mm": h_p
     }
 
 
-def compute_layout_grid(id_w_mm, id_h_mm, rows, cols, order="row"):
+def compute_layout_grid(id_w_mm, id_h_mm, rows, cols):
     iw = mm_to_px(id_w_mm); ih = mm_to_px(id_h_mm)
-    m = mm_to_px(1.5); g = mm_to_px(1.0)
+    m = mm_to_px(3.0); g = mm_to_px(1.5)
     pw = cols * iw + (cols - 1) * g + 2 * m
     ph = rows * ih + (rows - 1) * g + 2 * m
     start_x = m; start_y = m
     positions = []
     for idx in range(rows * cols):
-        if order == "col":
-            r = idx % rows
-            c = idx // rows
-        else:
-            r = idx // cols
-            c = idx % cols
+        r = idx // cols
+        c = idx % cols
         positions.append((start_x + c * (iw + g), start_y + r * (ih + g)))
     return {
         "paper": (pw, ph), "id": (iw, ih), "margin": m, "gap": g,
         "cols": cols, "rows": rows, "count": rows * cols,
-        "order": order, "positions": positions,
-        "sheet_color": (255, 255, 255),
+        "positions": positions, "sheet_color": (255, 255, 255),
         "paper_w_mm": int(round(pw / PX_PER_MM)), "paper_h_mm": int(round(ph / PX_PER_MM))
     }
+
+
+# ============================================================ 常用混排方案
+def compose_mixed_sheet(id_1in, id_2in, mix_type="6in_4_4", cut_lines=True, add_text=True):
+    """
+    冲印混排标准版（全正立直放，不旋转）：
+    - 6in_4_4: 6寸相纸 (102x152mm) -> 上方4张二寸 (2x2) + 下方4张一寸 (4x1)
+    - 5in_2_4: 5寸相纸 (127x89mm)  -> 左侧2张二寸 (2x1) + 右侧4张一寸 (2x2)
+    """
+    if mix_type == "5in_2_4":
+        # 5寸横放 (127x89mm) -> 1500 x 1051 px
+        pw, ph = mm_to_px(127), mm_to_px(89)
+        sheet = Image.new("RGB", (pw, ph), (255, 255, 255))
+        draw = ImageDraw.Draw(sheet)
+
+        w_2in, h_2in = id_2in.size # 413x579
+        w_1in, h_1in = id_1in.size # 295x413
+        gap = int(round(1.5 * PX_PER_MM))
+        border_c = (190, 190, 190)
+
+        # 2张二寸在左侧 (2列 x 1行)
+        # 4张一寸在右侧 (2列 x 2行)
+        total_w = (w_2in * 2 + gap) + gap * 2 + (w_1in * 2 + gap)
+        ox = max(20, (pw - total_w) // 2)
+
+        # 2张二寸
+        oy_2in = (ph - h_2in) // 2
+        for c in range(2):
+            x = ox + c * (w_2in + gap)
+            sheet.paste(id_2in, (x, oy_2in))
+            draw.rectangle([x, oy_2in, x + w_2in - 1, oy_2in + h_2in - 1], outline=border_c, width=1)
+
+        # 4张一寸
+        ox_1in = ox + (w_2in * 2 + gap) + gap * 2
+        oy_1in = (ph - (h_1in * 2 + gap)) // 2
+        for r in range(2):
+            for c in range(2):
+                x = ox_1in + c * (w_1in + gap)
+                y = oy_1in + r * (h_1in + gap)
+                sheet.paste(id_1in, (x, y))
+                draw.rectangle([x, y, x + w_1in - 1, y + h_1in - 1], outline=border_c, width=1)
+
+        if add_text:
+            font = _load_font(16)
+            label = "5寸冲印混排 · 2张二寸(35×49mm) + 4张一寸(25×35mm)"
+            bbox = draw.textbbox((0, 0), label, font=font)
+            tw = bbox[2] - bbox[0]
+            draw.text(((pw - tw) // 2, 10), label, fill=(60, 60, 60), font=font)
+
+        info = "5寸混排完成 · 2张二寸 + 4张一寸 · 纸张 1500×1051 px"
+        return sheet, info
+
+    else:
+        # 6寸竖放 (102x152mm) -> 1205 x 1795 px
+        pw, ph = mm_to_px(102), mm_to_px(152)
+        sheet = Image.new("RGB", (pw, ph), (255, 255, 255))
+        draw = ImageDraw.Draw(sheet)
+
+        w_2in, h_2in = id_2in.size # 413x579
+        w_1in, h_1in = id_1in.size # 295x413
+        gap = int(round(1.0 * PX_PER_MM))
+        border_c = (190, 190, 190)
+
+        # 上半部 4 张二寸 (2列 x 2行)
+        ox_2in = (pw - (w_2in * 2 + gap)) // 2
+        oy_2in = 70
+        for r in range(2):
+            for c in range(2):
+                x = ox_2in + c * (w_2in + gap)
+                y = oy_2in + r * (h_2in + gap)
+                sheet.paste(id_2in, (x, y))
+                draw.rectangle([x, y, x + w_2in - 1, y + h_2in - 1], outline=border_c, width=1)
+
+        # 下半部 4 张一寸 (4列 x 1行，全部正立直放)
+        ox_1in = (pw - (w_1in * 4)) // 2
+        oy_1in = oy_2in + 2 * (h_2in + gap) + 24
+        for c in range(4):
+            x = ox_1in + c * w_1in
+            y = oy_1in
+            sheet.paste(id_1in, (x, y))
+            draw.rectangle([x, y, x + w_1in - 1, y + h_1in - 1], outline=border_c, width=1)
+
+        if add_text:
+            font = _load_font(16)
+            label = "6寸冲印混排 · 4张二寸(35×49mm) + 4张一寸(25×35mm)"
+            bbox = draw.textbbox((0, 0), label, font=font)
+            tw = bbox[2] - bbox[0]
+            draw.text(((pw - tw) // 2, 18), label, fill=(60, 60, 60), font=font)
+
+        info = "6寸混排完成 · 4张二寸 + 4张一寸 · 纸张 1205×1795 px"
+        return sheet, info
 
 
 # ============================================================ 排版图生成绘制
@@ -461,15 +538,11 @@ def compose_sheet(id_photo, layout, sheet_color=(255, 255, 255),
     for (x, y) in layout["positions"]:
         x, y = int(x), int(y)
         sheet.paste(id_photo, (x, y))
-        # 1px 细边框，防止白底照片融入白相纸
         draw.rectangle([x, y, x + iw - 1, y + ih - 1], outline=border_color, width=1)
 
-    # 裁切参考十字线/标线
+    # 裁切参考标线
     if cut_lines and layout["count"] > 1:
         line_color = (180, 180, 180)
-        gap = layout["gap"]
-        cols, rows = layout["cols"], layout["rows"]
-        # 外围角标线
         for (x, y) in layout["positions"]:
             draw.line([(x, y - 6), (x, y)], fill=line_color, width=1)
             draw.line([(x + iw, y - 6), (x + iw, y)], fill=line_color, width=1)
@@ -489,53 +562,6 @@ def compose_sheet(id_photo, layout, sheet_color=(255, 255, 255),
             draw.rectangle([bar_x - pad, bar_y - pad, bar_x + tw + pad, bar_y + th + pad],
                            fill=(245, 245, 245), outline=(210, 210, 210), width=1)
             draw.text((bar_x, bar_y), label, fill=(50, 50, 50), font=font)
-
-    return sheet
-
-
-# ============================================================ 6寸常用混排 (4张2寸 + 4张1寸 全正立)
-def compose_mixed_6in_sheet(id_1in, id_2in, cut_lines=True, add_text=True):
-    """
-    6寸相纸 (102x152mm) 冲印混排标准版：
-    - 上方：4 张二寸 (2列 x 2行，全正立直放)
-    - 下方：4 张一寸 (4列 x 1行，全正立直放)
-    - 绝不旋转人像！整齐优雅充满相纸！
-    """
-    pw, ph = mm_to_px(102), mm_to_px(152) # 1205 x 1795 px
-    sheet = Image.new("RGB", (pw, ph), (255, 255, 255))
-    draw = ImageDraw.Draw(sheet)
-
-    w_2in, h_2in = id_2in.size # 413 x 579
-    w_1in, h_1in = id_1in.size # 295 x 413
-    gap = int(round(1.0 * PX_PER_MM)) # 12px
-    border_c = (190, 190, 190)
-
-    # 1. 上半部 4 张二寸 (2列 x 2行)
-    ox_2in = (pw - (w_2in * 2 + gap)) // 2
-    oy_2in = 70
-    for r in range(2):
-        for c in range(2):
-            x = ox_2in + c * (w_2in + gap)
-            y = oy_2in + r * (h_2in + gap)
-            sheet.paste(id_2in, (x, y))
-            draw.rectangle([x, y, x + w_2in - 1, y + h_2in - 1], outline=border_c, width=1)
-
-    # 2. 下半部 4 张一寸 (4列 x 1行，正立直放)
-    ox_1in = (pw - (w_1in * 4)) // 2
-    oy_1in = oy_2in + 2 * (h_2in + gap) + 24
-    for c in range(4):
-        x = ox_1in + c * w_1in
-        y = oy_1in
-        sheet.paste(id_1in, (x, y))
-        draw.rectangle([x, y, x + w_1in - 1, y + h_1in - 1], outline=border_c, width=1)
-
-    # 顶部标注
-    if add_text:
-        font = _load_font(16)
-        label = "6寸冲印混排 · 4张二寸(35×49mm) + 4张一寸(25×35mm)"
-        bbox = draw.textbbox((0, 0), label, font=font)
-        tw = bbox[2] - bbox[0]
-        draw.text(((pw - tw) // 2, 18), label, fill=(60, 60, 60), font=font)
 
     return sheet
 

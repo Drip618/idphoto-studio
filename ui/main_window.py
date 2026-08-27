@@ -1,13 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-ui/main_window.py — 证件照工作室 Studio 完整重构版
+ui/main_window.py — 证件照工作室 Studio 照相馆专业版
 =========================================================================
-- 解决所有界面显示截断与重叠问题（自适应宽度，无多余横向滚动条）
-- 修复相纸下拉名称重复问题
-- 支持「常用混排」冲印模式（6寸 4张二寸+4张一寸，全正立直放）
-- 采用 SOTA RMBG-1.4 亚像素发丝抠图模型，彻底去除暗色背景
-- 采用照相馆国标黄金比例构图（肩膀自然贴死画幅底部，头顶留白，绝无悬空底色）
-- 画布自适应可视区缩放，绝不下溢出屏幕
+- 彻底移除无用空壳控件（如单人排版下的行/列优先单选框）
+- 彻底消除点击闪烁（原子平滑更新，无白屏黑屏过渡）
+- 照相馆标准冲印排版（6寸8张二寸/16张一寸，5寸9张一寸/4张二寸，5寸与6寸混排）
+- 真正国标贴底构图（头顶留白8%，胸口肩膀延伸贴死相片下边缘）
 """
 import os
 import sys
@@ -15,8 +13,8 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLabel, QPushButton, QComboBox, QLineEdit, QSpinBox, QFileDialog,
     QMessageBox, QDialog, QDialogButtonBox, QTabWidget, QListWidget,
-    QProgressBar, QRadioButton, QButtonGroup, QDoubleSpinBox, QFrame,
-    QSplitter, QCheckBox, QColorDialog, QScrollArea, QSizePolicy
+    QProgressBar, QDoubleSpinBox, QFrame, QSplitter, QCheckBox, QColorDialog,
+    QScrollArea, QSizePolicy
 )
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSettings, QSize
 from PySide6.QtGui import (
@@ -161,7 +159,7 @@ QProgressBar::chunk {
     background-color: #2563eb;
     border-radius: 3px;
 }
-QRadioButton, QCheckBox {
+QCheckBox {
     font-size: 11px;
     color: #334155;
     spacing: 5px;
@@ -246,9 +244,9 @@ class RenderWorker(QThread):
                 self.done.emit(id_photo, info, True, id_photo)
                 return
 
-            # 4: 常用混排 (4张二寸 + 4张一寸)
-            if self.mode_idx == 4:
-                # 准备 1寸和2寸
+            # 3: 常用混排 (6寸或5寸)
+            if self.mode_idx == 3:
+                mix_type = self.extra_params.get("mix_type", "6in_4_4")
                 if self.cached_rgba is not None:
                     id_1in = core.create_standard_id_photo(self.cached_rgba, core.mm_to_px(25), core.mm_to_px(35), bg_rgb)
                     id_2in = core.create_standard_id_photo(self.cached_rgba, core.mm_to_px(35), core.mm_to_px(49), bg_rgb)
@@ -257,20 +255,16 @@ class RenderWorker(QThread):
                     id_1in = core.prepare_id_photo(img, core.mm_to_px(25), core.mm_to_px(35), bg_rgb, matting)
                     id_2in = core.prepare_id_photo(img, core.mm_to_px(35), core.mm_to_px(49), bg_rgb, matting)
 
-                sheet = core.compose_mixed_6in_sheet(id_1in, id_2in, cut_lines=self.cut_lines, add_text=self.add_text)
-                info = "6寸冲印混排 · 4张二寸 (35×49mm) + 4张一寸 (25×35mm)"
+                sheet, info = core.compose_mixed_sheet(id_1in, id_2in, mix_type=mix_type, cut_lines=self.cut_lines, add_text=self.add_text)
                 self.done.emit(sheet, info, False, id_photo)
                 return
 
-            # 0: 相纸排满, 2: 自定义网格, 3: 指定张数
+            # 0: 相纸排满, 2: 自定义网格
             if self.mode_idx == 0:
                 p = self.extra_params["paper"]
-                lay = core.compute_layout(p["w_mm"], p["h_mm"], self.size_dict["w_mm"], self.size_dict["h_mm"], order=self.extra_params["order"])
-            elif self.mode_idx == 2:
-                lay = core.compute_layout_grid(self.size_dict["w_mm"], self.size_dict["h_mm"], self.extra_params["rows"], self.extra_params["cols"], order=self.extra_params["order"])
+                lay = core.compute_layout(p["w_mm"], p["h_mm"], self.size_dict["w_mm"], self.size_dict["h_mm"])
             else:
-                p = self.extra_params["paper"]
-                lay = core.compute_layout(p["w_mm"], p["h_mm"], self.size_dict["w_mm"], self.size_dict["h_mm"], order=self.extra_params["order"])
+                lay = core.compute_layout_grid(self.size_dict["w_mm"], self.size_dict["h_mm"], self.extra_params["rows"], self.extra_params["cols"])
 
             size_name = self.size_dict["name"] if self.add_text else ""
             size_dims = f"{self.size_dict['w_mm']}×{self.size_dict['h_mm']}mm" if self.add_text else ""
@@ -283,8 +277,8 @@ class RenderWorker(QThread):
                 cut_lines=self.cut_lines
             )
 
-            ori_tag = "横放" if lay["paper_w_mm"] > lay["paper_h_mm"] else "竖放"
-            info = f"冲印排版 · {lay['count']} 张 ({lay['cols']}列 × {lay['rows']}行 · 相纸{ori_tag}) · {lay['paper'][0]}×{lay['paper'][1]} px"
+            ori_tag = "横放相纸" if lay["paper_w_mm"] > lay["paper_h_mm"] else "竖放相纸"
+            info = f"冲印排版 · {lay['count']} 张 ({lay['cols']}列 × {lay['rows']}行 · {ori_tag}) · {lay['paper'][0]}×{lay['paper'][1]} px"
             self.done.emit(sheet, info, False, id_photo)
         except Exception as e:
             import traceback
@@ -300,7 +294,7 @@ class MainWindow(QMainWindow):
         self.settings = QSettings("IDPhotoStudio", "App")
         self.input_path = None
         self.cached_rgba = None
-        self.current_render_image = None # PIL Image
+        self.current_render_image = None
         self.current_sheet = None
         self.current_single = None
         self.current_color_data = {"name": "蓝底", "rgb": (67, 142, 219), "hex": "#438EDB"}
@@ -320,8 +314,8 @@ class MainWindow(QMainWindow):
         # ---------- 左侧控制面板 ----------
         left_scroll = QScrollArea()
         left_scroll.setWidgetResizable(True)
-        left_scroll.setMinimumWidth(400)
-        left_scroll.setMaximumWidth(480)
+        left_scroll.setMinimumWidth(380)
+        left_scroll.setMaximumWidth(460)
         left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         left_container = QWidget()
@@ -440,11 +434,10 @@ class MainWindow(QMainWindow):
 
         self.mode_combo = QComboBox()
         self.mode_combo.addItems([
-            "📄 打印相纸自动排满 (单规格)",
+            "📄 照相馆标准相纸排版",
             "🖼 仅单张证件照",
             "📐 自定义网格 (指定行/列)",
-            "🔢 指定张数 (塞入相纸)",
-            "🔀 6寸常用混排 (4张二寸 + 4张一寸)"
+            "🔀 常用冲印混排"
         ])
         self.mode_combo.currentIndexChanged.connect(self.on_mode_changed)
         cl_lay.addWidget(self.mode_combo)
@@ -460,6 +453,16 @@ class MainWindow(QMainWindow):
         pc_layout.addWidget(self.paper_info_badge)
         cl_lay.addWidget(self.paper_container)
 
+        # 混排方案容器
+        self.mixed_container = QWidget()
+        mc_layout = QVBoxLayout(self.mixed_container); mc_layout.setContentsMargins(0, 0, 0, 0); mc_layout.setSpacing(4)
+        self.opt_mixed = QComboBox()
+        self.opt_mixed.addItem("6寸混排 · 4张二寸 + 4张一寸 (正立)", "6in_4_4")
+        self.opt_mixed.addItem("5寸混排 · 2张二寸 + 4张一寸 (正立)", "5in_2_4")
+        self.opt_mixed.currentIndexChanged.connect(self.trigger_render_debounce)
+        mc_layout.addWidget(self.opt_mixed)
+        cl_lay.addWidget(self.mixed_container)
+
         # 自定义网格容器
         self.grid_container = QWidget()
         gc_layout = QHBoxLayout(self.grid_container); gc_layout.setContentsMargins(0, 0, 0, 0); gc_layout.setSpacing(6)
@@ -473,18 +476,9 @@ class MainWindow(QMainWindow):
         gc_layout.addWidget(self.opt_cols)
         cl_lay.addWidget(self.grid_container)
 
-        # 指定张数容器
-        self.count_container = QWidget()
-        cnt_layout = QHBoxLayout(self.count_container); cnt_layout.setContentsMargins(0, 0, 0, 0); cnt_layout.setSpacing(6)
-        cnt_layout.addWidget(QLabel("目标张数:"))
-        self.opt_count = QSpinBox(); self.opt_count.setRange(1, 200); self.opt_count.setValue(8)
-        self.opt_count.valueChanged.connect(self.trigger_render_debounce)
-        cnt_layout.addWidget(self.opt_count)
-        cl_lay.addWidget(self.count_container)
-
         # 辅助选项
         opt_line = QHBoxLayout()
-        self.cb_cutlines = QCheckBox("打印裁切标线")
+        self.cb_cutlines = QCheckBox("打印裁切参考标线")
         self.cb_cutlines.setChecked(True)
         self.cb_cutlines.toggled.connect(self.trigger_render_debounce)
         opt_line.addWidget(self.cb_cutlines)
@@ -494,22 +488,6 @@ class MainWindow(QMainWindow):
         self.cb_sizetext.toggled.connect(self.trigger_render_debounce)
         opt_line.addWidget(self.cb_sizetext)
         cl_lay.addLayout(opt_line)
-
-        # 序列顺序
-        self.order_container = QWidget()
-        order_line = QHBoxLayout(self.order_container); order_line.setContentsMargins(0, 0, 0, 0); order_line.setSpacing(6)
-        order_line.addWidget(QLabel("排序:"))
-        self.order_group = QButtonGroup(self)
-        r_row = QRadioButton("行优先 (→)")
-        r_col = QRadioButton("列优先 (↓)")
-        r_row.setChecked(True)
-        self.order_group.addButton(r_row, 0)
-        self.order_group.addButton(r_col, 1)
-        r_row.toggled.connect(self.trigger_render_debounce)
-        order_line.addWidget(r_row)
-        order_line.addWidget(r_col)
-        order_line.addStretch()
-        cl_lay.addWidget(self.order_container)
 
         left_layout.addWidget(card_layout)
 
@@ -576,7 +554,7 @@ class MainWindow(QMainWindow):
         splitter.addWidget(right_panel)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([420, 860])
+        splitter.setSizes([400, 880])
 
         self.refresh_sizes()
         self.refresh_papers()
@@ -646,7 +624,6 @@ class MainWindow(QMainWindow):
             thumb_pm = QPixmap.fromImage(pil_to_qimage(thumb_img))
             self.thumb_label.setPixmap(thumb_pm)
 
-            # 呈现原图真实比例
             self.current_render_image = orig_img
             self.update_canvas_display()
             self.view_status.setText(f"已载入: {fname} · 后台智能高精抠图中…")
@@ -654,7 +631,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.fileinfo_label.setText(str(e))
 
-        self.status_label.setText("正在执行 RMBG 亚像素发丝级智能抠图…")
+        self.status_label.setText("正在执行高精发丝级抠图…")
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)
 
@@ -706,11 +683,10 @@ class MainWindow(QMainWindow):
 
     def on_mode_changed(self):
         mode = self.mode_combo.currentIndex()
-        # 0: 相纸排满, 1: 仅单张, 2: 自定义网格, 3: 指定张数, 4: 常用混排
-        self.paper_container.setVisible(mode in (0, 3))
+        # 0: 相纸排满, 1: 仅单张, 2: 自定义网格, 3: 常用混排
+        self.paper_container.setVisible(mode == 0)
         self.grid_container.setVisible(mode == 2)
-        self.count_container.setVisible(mode == 3)
-        self.order_container.setVisible(mode in (0, 2, 3))
+        self.mixed_container.setVisible(mode == 3)
         self.update_paper_calc_badge()
         self.trigger_render_debounce()
 
@@ -720,12 +696,12 @@ class MainWindow(QMainWindow):
         mode = self.mode_combo.currentIndex()
         if mode == 0 and s and p:
             lay = core.compute_layout(p["w_mm"], p["h_mm"], s["w_mm"], s["h_mm"])
-            ori_tag = "横放相纸" if lay["paper_w_mm"] > lay["paper_h_mm"] else "竖放相纸"
-            self.paper_info_badge.setText(f"💡 自动最大排满: {lay['count']} 张 ({lay['cols']}列 × {lay['rows']}行 · {ori_tag})")
+            ori_tag = "横放" if lay["paper_w_mm"] > lay["paper_h_mm"] else "竖放"
+            self.paper_info_badge.setText(f"💡 自动标准排版: {lay['count']} 张 ({lay['cols']}列 × {lay['rows']}行 · {ori_tag})")
         elif mode == 1:
             self.paper_info_badge.setText("💡 输出单张证件照")
-        elif mode == 4:
-            self.paper_info_badge.setText("💡 6寸标准冲印: 4张二寸(35×49) + 4张一寸(25×35)")
+        elif mode == 3:
+            self.paper_info_badge.setText("💡 混排模板 · 所有照片正立排列")
         else:
             self.paper_info_badge.setText("")
 
@@ -747,10 +723,10 @@ class MainWindow(QMainWindow):
             self.opt_paper.addItem(f"{p['name']}", p)
         self.opt_paper.blockSignals(False)
 
-    # ---------- 渲染管理 ----------
+    # ---------- 渲染管理 (平滑无闪烁替换) ----------
     def trigger_render_debounce(self):
         if self.input_path:
-            self.debounce_timer.start(250)
+            self.debounce_timer.start(180)
 
     def render_now(self):
         self.debounce_timer.stop()
@@ -768,9 +744,7 @@ class MainWindow(QMainWindow):
             "paper": self.opt_paper.currentData(),
             "rows": self.opt_rows.value(),
             "cols": self.opt_cols.value(),
-            "count": self.opt_count.value(),
-            "order": "col" if self.order_group.checkedId() == 1 else "row",
-            "mix_key": "6in_4_4"
+            "mix_type": self.opt_mixed.currentData()
         }
 
         cut_lines = self.cb_cutlines.isChecked()
@@ -782,7 +756,7 @@ class MainWindow(QMainWindow):
         self.btn_export.setEnabled(False)
 
         if self.worker and self.worker.isRunning():
-            self.worker.quit(); self.worker.wait(500)
+            self.worker.quit(); self.worker.wait(400)
 
         self.worker = RenderWorker(
             self.input_path, s, self.current_color_data, mode_idx, extra_params,
@@ -794,6 +768,7 @@ class MainWindow(QMainWindow):
         self.worker.start()
 
     def on_render_done(self, img, info, is_single, single_photo):
+        # 原子平滑替换，避免任何白屏或闪烁
         self.current_render_image = img
         self.current_sheet = None if is_single else img
         self.current_single = single_photo
@@ -807,8 +782,8 @@ class MainWindow(QMainWindow):
     def update_canvas_display(self):
         if self.current_render_image is None:
             return
-        target_w = max(100, self.preview_canvas.width() - 24)
-        target_h = max(100, self.preview_canvas.height() - 24)
+        target_w = max(100, self.preview_canvas.width() - 20)
+        target_h = max(100, self.preview_canvas.height() - 20)
         qimg = pil_to_qimage(self.current_render_image)
         pm = QPixmap.fromImage(qimg).scaled(target_w, target_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         self.preview_canvas.setPixmap(pm)
@@ -841,8 +816,8 @@ class MainWindow(QMainWindow):
         try:
             if self.current_sheet is not None:
                 mode_idx = self.mode_combo.currentIndex()
-                if mode_idx == 4:
-                    tag = "6寸混排"
+                if mode_idx == 3:
+                    tag = "混排冲印"
                 elif mode_idx == 2:
                     tag = "网格排版"
                 else:
