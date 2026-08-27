@@ -3,14 +3,12 @@
 idphoto_core.py — 证件照换底色 + 排版打印 核心引擎（数据驱动，无 GUI 依赖）
 =========================================================================
 - 智能抠图：SOTA 级 BRIA RMBG-1.4 高清发丝抠图模型（1024x1024 亚像素精度，发丝边缘极致纯净）
-- 照相馆自然标准证件照构图 (Studio Natural Framing)：
+- 照相馆自然标准半身证件照构图 (Studio Natural Framing)：
   - 完整呈现头顶、人脸、五官、下巴、脖子、衣领与双肩展开
   - 支持人像缩放 (zoom_ratio) 与 上下/左右 位置微调 (offset_y, offset_x)
 - 照相馆规范相纸排版：
-  - 5寸相纸 (89x127mm 竖版): 上2张二寸 + 下6张一寸 (3列x2行，共8张满幅)
-  - 6寸横版 (152x102mm): 左4张二寸 (2x2) + 右6张一寸 (3x2) (共10张，照相馆最畅销冲印版)
-  - 6寸竖版 (102x152mm): 上4张二寸 (2x2) + 下6张一寸 (3x2) (共10张)
-  - 6寸多一寸 (102x152mm): 上2张二寸 (1x2) + 下8张一寸 (4x2) (共10张)
+  - 6寸横版金牌满排 (152x102mm): 左4张二寸 (2x2) + 右8张横放一寸 (2x4) (共12张，左右齐平，照相馆最畅销冲印版)
+  - 5寸竖版标准满排 (89x127mm): 上2张二寸 (1x2) + 下6张一寸 (3x2) (共8张满幅)
   - 支持强制横版 / 强制竖版 / 自动最优朝向
 """
 
@@ -131,150 +129,92 @@ def _paper_to_dict(t):
     }
 
 
-def _color_to_dict(t):
-    key, name, rgb, hex_c = t
-    return {
-        "key": key,
-        "name": name,
-        "rgb": rgb,
-        "hex": hex_c,
-    }
-
-
-def load_sizes():
-    return [_size_to_dict(t) for t in BUILTIN_SIZES] + PresetManager().sizes()
+def load_presets():
+    sizes = [_size_to_dict(t) for t in BUILTIN_SIZES]
+    if os.path.exists(USER_CONFIG):
+        try:
+            with open(USER_CONFIG, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            custom_sizes = data.get("sizes", [])
+            for c in custom_sizes:
+                if "w_px" not in c:
+                    c["w_px"] = mm_to_px(c["w_mm"])
+                if "h_px" not in c:
+                    c["h_px"] = mm_to_px(c["h_mm"])
+                sizes.append(c)
+        except Exception:
+            pass
+    return sizes
 
 
 def load_papers():
-    return [_paper_to_dict(t) for t in BUILTIN_PAPERS] + PresetManager().papers()
-
-
-def load_colors():
-    return [_color_to_dict(t) for t in BUILTIN_COLORS] + PresetManager().colors()
-
-
-def search_sizes(keyword):
-    kw = keyword.strip().lower()
-    if not kw:
-        return load_sizes()
-    return [s for s in load_sizes()
-            if kw in (s["name"] + s["category"] + s["key"]).lower()]
-
-
-# ============================================================ 预设管理
-class PresetManager:
-    def __init__(self):
-        self.data = self._load()
-
-    def _load(self):
-        if not os.path.exists(USER_CONFIG):
-            return {"sizes": [], "papers": [], "colors": []}
+    papers = [_paper_to_dict(t) for t in BUILTIN_PAPERS]
+    if os.path.exists(USER_CONFIG):
         try:
             with open(USER_CONFIG, "r", encoding="utf-8") as f:
-                d = json.load(f)
-            d.setdefault("sizes", [])
-            d.setdefault("papers", [])
-            d.setdefault("colors", [])
-            return d
+                data = json.load(f)
+            custom_papers = data.get("papers", [])
+            for p in custom_papers:
+                if "w_px" not in p:
+                    p["w_px"] = mm_to_px(p["w_mm"])
+                if "h_px" not in p:
+                    p["h_px"] = mm_to_px(p["h_mm"])
+                papers.append(p)
         except Exception:
-            return {"sizes": [], "papers": [], "colors": []}
-
-    def _save(self):
-        os.makedirs(USER_CONFIG_DIR, exist_ok=True)
-        with open(USER_CONFIG, "w", encoding="utf-8") as f:
-            json.dump(self.data, f, ensure_ascii=False, indent=2)
-
-    def sizes(self):
-        out = []
-        for s in self.data["sizes"]:
-            w, h = s["w_mm"], s["h_mm"]
-            out.append({"key": s.get("key", s["name"]), "name": s["name"],
-                        "category": s.get("category", "我的预设"),
-                        "w_mm": w, "h_mm": h,
-                        "w_px": mm_to_px(w), "h_px": mm_to_px(h)})
-        return out
-
-    def add_size(self, name, w_mm, h_mm, category="我的预设"):
-        self.data["sizes"].append({"key": "u_" + name, "name": name,
-                                   "category": category, "w_mm": w_mm, "h_mm": h_mm})
-        self._save()
-
-    def remove_size(self, name):
-        self.data["sizes"] = [s for s in self.data["sizes"] if s["name"] != name]
-        self._save()
-
-    def papers(self):
-        out = []
-        for p in self.data["papers"]:
-            w, h = p["w_mm"], p["h_mm"]
-            out.append({"key": p.get("key", p["name"]), "name": p["name"],
-                        "w_mm": w, "h_mm": h, "w_px": mm_to_px(w), "h_px": mm_to_px(h)})
-        return out
-
-    def add_paper(self, name, w_mm, h_mm):
-        self.data["papers"].append({"key": "u_" + name, "name": name,
-                                    "w_mm": w_mm, "h_mm": h_mm})
-        self._save()
-
-    def remove_paper(self, name):
-        self.data["papers"] = [p for p in self.data["papers"] if p["name"] != name]
-        self._save()
-
-    def colors(self):
-        out = []
-        for c in self.data["colors"]:
-            out.append({"key": "u_" + c["name"], "name": c["name"],
-                        "rgb": tuple(c["rgb"]), "hex": c["hex"]})
-        return out
-
-    def add_color(self, name, rgb, hex_c):
-        self.data["colors"].append({"name": name, "rgb": list(rgb), "hex": hex_c})
-        self._save()
-
-    def remove_color(self, name):
-        self.data["colors"] = [c for c in self.data["colors"] if c["name"] != name]
-        self._save()
+            pass
+    return papers
 
 
-# ============================================================ 智能抠图管线 (纯正 SOTA RMBG-1.4 高清模型)
+# ============================================================ 异常类定义
+class MattingError(RuntimeError):
+    pass
+
+
+# ============================================================ 智能发丝抠图引擎
 class Matting:
-    def __init__(self):
+    def __init__(self, model_path=None):
+        self.model_path = model_path or self._locate_model()
         self._session = None
-        self._model_path = self.locate_model_path()
 
     @staticmethod
-    def locate_model_path():
+    def _locate_model():
+        for p in Matting.model_search_paths():
+            if os.path.exists(p):
+                return p
+        return Matting.model_search_paths()[-1]
+
+    @staticmethod
+    def model_search_paths():
+        paths = []
         for name in MODEL_NAMES:
-            cands = []
             if getattr(sys, "frozen", False):
                 base = getattr(sys, "_MEIPASS", None)
                 if base:
-                    cands.append(os.path.join(base, "weights", name))
-            cands.append(os.path.join(PROJECT_ROOT, "weights", name))
-            cands.append(os.path.join(USER_WEIGHTS_DIR, name))
-            for p in cands:
-                if os.path.exists(p):
-                    return p
-        return None
+                    paths.append(os.path.join(base, "weights", name))
+            paths.append(os.path.join(PROJECT_ROOT, "weights", name))
+            paths.append(os.path.join(USER_WEIGHTS_DIR, name))
+        return paths
 
     def available(self):
-        return self._model_path is not None and os.path.exists(self._model_path)
+        return os.path.exists(self.model_path)
 
     def _ensure_session(self):
         if self._session is not None:
             return self._session
         if not self.available():
-            raise RuntimeError("未找到抠图模型，请选择「原图」仅排版。")
+            raise MattingError(
+                "未找到抠图模型。\n已搜索路径：\n%s\n请确认 weights/ 目录下存在模型文件。"
+                % "\n".join(self.model_search_paths()[:4]))
         import onnxruntime as ort
-        self._session = ort.InferenceSession(self._model_path, providers=["CPUExecutionProvider"])
+        self._session = ort.InferenceSession(self.model_path,
+                                             providers=["CPUExecutionProvider"])
         return self._session
 
     def remove(self, image):
         sess = self._ensure_session()
         inp = sess.get_inputs()[0]
         orig_w, orig_h = image.size
-
-        is_rmbg = "rmbg" in os.path.basename(self._model_path).lower()
+        is_rmbg = "rmbg" in os.path.basename(self.model_path).lower()
 
         if is_rmbg:
             target = 1024
@@ -296,11 +236,13 @@ class Matting:
             scale = target / max(orig_w, orig_h)
             new_w = max(1, int(round(orig_w * scale)))
             new_h = max(1, int(round(orig_h * scale)))
+
             resized = image.resize((new_w, new_h), Image.BILINEAR).convert("RGB")
             pad_left = (target - new_w) // 2
             pad_top = (target - new_h) // 2
             padded = Image.new("RGB", (target, target), (128, 128, 128))
             padded.paste(resized, (pad_left, pad_top))
+
             arr = np.asarray(padded, dtype=np.float32)
             mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
             std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
@@ -310,45 +252,43 @@ class Matting:
             out = sess.run(None, {inp.name: arr})[0]
             alpha_full = out[0, 0] if out.ndim == 4 else out[0]
             alpha_full = (np.clip(alpha_full, 0, 1) * 255).astype(np.uint8)
+
             alpha_crop = alpha_full[pad_top:pad_top + new_h, pad_left:pad_left + new_w]
             alpha = Image.fromarray(alpha_crop, mode="L").resize((orig_w, orig_h), Image.LANCZOS)
 
-        alpha = alpha.filter(ImageFilter.MaxFilter(3)).filter(ImageFilter.MinFilter(3))
         rgba = image.convert("RGBA")
         rgba.putalpha(alpha)
         return rgba
 
 
-# ============================================================ 照相馆自然标准证件照构图 (Studio Natural Framing)
+# ============================================================ 照相馆自然标准半身胸像裁剪算法
 def create_standard_id_photo(rgba, target_w, target_h, bg_rgb, zoom_ratio=1.0, offset_y_ratio=0.0, offset_x_ratio=0.0):
     """
-    照相馆自然半身胸像标准证件照构图：
-    1. 保持原图半身人像的完整优雅形态：头顶留白约 8%~10%，下巴、脖子、领口、双肩自然展开
-    2. 支持 zoom_ratio 人像缩放调节 (默认 1.0)
-    3. 支持 offset_y_ratio / offset_x_ratio 上下左右位置微调
-    4. 白底照片自带 1px 细微浅灰外边框，防止与白纸融为一体
+    照相馆自然标准半身证件照构图 (Studio Natural Framing)：
+    - 完整呈现头顶、人脸、五官、下巴、脖子、衣领与双肩展开
+    - 支持人像缩放 (zoom_ratio) 与 上下/左右 位置微调 (offset_y, offset_x)
     """
     alpha_arr = np.array(rgba.split()[-1])
     orig_w, orig_h = rgba.size
 
     rows = np.where(np.any(alpha_arr > 25, axis=1))[0]
-    if len(rows) == 0:
-        return _center_crop_fill(rgba.convert("RGB"), target_w, target_h)
+    cols = np.where(np.any(alpha_arr > 25, axis=0))[0]
+    if len(rows) == 0 or len(cols) == 0:
+        return rgba.convert("RGB").resize((target_w, target_h), Image.LANCZOS)
 
     y_top = rows[0]
     y_bot = rows[-1]
-    person_h = max(100, y_bot - y_top)
 
     # 扫描头部中心线
-    head_scan_h = min(800, max(100, int(person_h * 0.4)))
-    head_slice = alpha_arr[y_top : y_top + head_scan_h, :]
-    head_cols = np.where(np.any(head_slice > 45, axis=0))[0]
+    head_scan_h = min(800, y_bot - y_top)
+    head_rows = alpha_arr[y_top : y_top + head_scan_h, :]
+    head_cols = np.where(np.any(head_rows > 45, axis=0))[0]
     if len(head_cols) > 0:
         face_cx = (head_cols[0] + head_cols[-1]) / 2.0
     else:
-        face_cx = orig_w / 2.0
+        face_cx = (cols[0] + cols[-1]) / 2.0
 
-    # 照相馆自然胸像基准比例：半身像高度在相片中占约 91%
+    person_h = max(100, y_bot - y_top)
     base_scale = (target_h * 0.91) / person_h
     scale = base_scale * zoom_ratio
 
@@ -356,34 +296,21 @@ def create_standard_id_photo(rgba, target_w, target_h, bg_rgb, zoom_ratio=1.0, o
     scaled_h = max(1, int(round(orig_h * scale)))
     scaled_rgba = rgba.resize((scaled_w, scaled_h), Image.LANCZOS)
 
-    # 水平居中 + 微调
     scaled_cx = int(round(face_cx * scale))
     paste_x = int(round((target_w / 2.0) - scaled_cx + target_w * offset_x_ratio))
 
-    # 垂直位置：头顶位于相片 8% 处 + 微调
     scaled_ytop = int(round(y_top * scale))
     paste_y = int(round(target_h * 0.08 - scaled_ytop + target_h * offset_y_ratio))
 
     canvas = Image.new("RGB", (target_w, target_h), bg_rgb if bg_rgb else (255, 255, 255))
     canvas.paste(scaled_rgba, (paste_x, paste_y), scaled_rgba.split()[-1])
 
-    # 如果是白底，绘制极细的 1px 浅灰色外边框 (防止白纸打印时融为一体)
+    # 如果是白底，绘制极细的 1px 浅灰色外边框，防止与白相纸融为一体
     if bg_rgb == (255, 255, 255):
         draw = ImageDraw.Draw(canvas)
         draw.rectangle([0, 0, target_w - 1, target_h - 1], outline=(220, 220, 220), width=1)
 
     return canvas
-
-
-def _center_crop_fill(img, target_w, target_h):
-    src_w, src_h = img.size
-    scale = max(target_w / src_w, target_h / src_h)
-    new_w = max(1, round(src_w * scale))
-    new_h = max(1, round(src_h * scale))
-    resized = img.resize((new_w, new_h), Image.LANCZOS)
-    left = (new_w - target_w) // 2
-    top = (new_h - target_h) // 2
-    return resized.crop((left, top, left + target_w, top + target_h))
 
 
 def prepare_id_photo(image, id_w_px, id_h_px, bg_rgb, matting=None, zoom_ratio=1.0, offset_y_ratio=0.0, offset_x_ratio=0.0):
@@ -394,76 +321,59 @@ def prepare_id_photo(image, id_w_px, id_h_px, bg_rgb, matting=None, zoom_ratio=1
         try:
             rgba = matting.remove(image)
             return create_standard_id_photo(rgba, id_w_px, id_h_px, bg_rgb, zoom_ratio, offset_y_ratio, offset_x_ratio)
-        except Exception:
-            pass
+        except MattingError:
+            raise
+        except Exception as e:
+            raise MattingError("抠图处理异常：%s" % str(e))
 
-    return _center_crop_fill(image.convert("RGB"), id_w_px, id_h_px)
+    # 原图不换背景，直接做自然半身居中裁剪
+    alpha_img = Image.new("L", image.size, 255)
+    rgba = image.copy()
+    rgba.putalpha(alpha_img)
+    return create_standard_id_photo(rgba, id_w_px, id_h_px, None, zoom_ratio, offset_y_ratio, offset_x_ratio)
 
 
-# ============================================================ 照相馆规范舒适冲印排版算法 (单规格)
-def compute_layout(paper_w_mm, paper_h_mm, id_w_mm, id_h_mm, orientation="auto"):
+# ============================================================ 极度精准的单规格相纸排版算法
+def compute_layout(paper_w_mm, paper_h_mm, id_w_mm, id_h_mm, preferred_orientation="auto"):
     """
-    orientation: "auto" / "landscape" / "portrait"
+    智能选择横向/竖向相纸朝向以获取最大冲印张数。
     """
-    p_min = min(paper_w_mm, paper_h_mm)
-    p_max = max(paper_w_mm, paper_h_mm)
-
-    if orientation == "landscape":
-        candidate_orientations = [(p_max, p_min)]
-    elif orientation == "portrait":
-        candidate_orientations = [(p_min, p_max)]
+    if preferred_orientation == "landscape":
+        candidate_orientations = [(max(paper_w_mm, paper_h_mm), min(paper_w_mm, paper_h_mm))]
+    elif preferred_orientation == "portrait":
+        candidate_orientations = [(min(paper_w_mm, paper_h_mm), max(paper_w_mm, paper_h_mm))]
     else:
-        candidate_orientations = [(p_max, p_min), (p_min, p_max)]
-
-    standards = {
-        # 5寸竖版: 89 x 127 mm -> 一寸 9 张 (3x3), 二寸 4 张 (2x2)
-        (89, 127, 25, 35): {"paper_w": 89, "paper_h": 127, "cols": 3, "rows": 3, "count": 9, "gap": 1.5, "margin": 5.0},
-        (89, 127, 35, 49): {"paper_w": 89, "paper_h": 127, "cols": 2, "rows": 2, "count": 4, "gap": 2.0, "margin": 6.0},
-        # 5寸横版: 127 x 89 mm -> 一寸 8 张 (4x2), 二寸 2 张
-        (127, 89, 25, 35): {"paper_w": 127, "paper_h": 89, "cols": 4, "rows": 2, "count": 8, "gap": 1.2, "margin": 3.5},
-        (127, 89, 35, 49): {"paper_w": 127, "paper_h": 89, "cols": 3, "rows": 1, "count": 3, "gap": 2.0, "margin": 5.0},
-
-        # 6寸横版: 152 x 102 mm -> 一寸 16 张 (4x4) 或 8 张舒适版, 二寸 8 张 (4x2)
-        (152, 102, 25, 35): {"paper_w": 152, "paper_h": 102, "cols": 4, "rows": 2, "count": 8, "gap": 1.5, "margin": 4.0},
-        (152, 102, 35, 49): {"paper_w": 152, "paper_h": 102, "cols": 4, "rows": 2, "count": 8, "gap": 1.2, "margin": 3.0},
-        # 6寸竖版: 102 x 152 mm -> 一寸 12 张 (3x4), 二寸 4 张 (2x2)
-        (102, 152, 25, 35): {"paper_w": 102, "paper_h": 152, "cols": 3, "rows": 4, "count": 12, "gap": 1.5, "margin": 4.0},
-        (102, 152, 35, 49): {"paper_w": 102, "paper_h": 152, "cols": 2, "rows": 2, "count": 4, "gap": 2.0, "margin": 6.0},
-
-        # 7寸: 178 x 127 mm
-        (178, 127, 25, 35): {"paper_w": 178, "paper_h": 127, "cols": 4, "rows": 3, "count": 12, "gap": 1.5, "margin": 4.0},
-        (178, 127, 35, 49): {"paper_w": 178, "paper_h": 127, "cols": 4, "rows": 2, "count": 8, "gap": 2.0, "margin": 5.0},
-
-        # A4: 210 x 297 mm
-        (210, 297, 25, 35): {"paper_w": 210, "paper_h": 297, "cols": 6, "rows": 6, "count": 36, "gap": 2.0, "margin": 8.0},
-        (210, 297, 35, 49): {"paper_w": 210, "paper_h": 297, "cols": 4, "rows": 4, "count": 16, "gap": 3.0, "margin": 10.0},
-    }
+        candidate_orientations = [
+            (max(paper_w_mm, paper_h_mm), min(paper_w_mm, paper_h_mm)),
+            (min(paper_w_mm, paper_h_mm), max(paper_w_mm, paper_h_mm))
+        ]
 
     best = None
     for (w_p, h_p) in candidate_orientations:
-        match = standards.get((w_p, h_p, id_w_mm, id_h_mm))
-        if match:
-            if best is None or match["count"] > best["count"]:
-                best = match
-        else:
-            for g in [1.5, 1.0, 0.8]:
-                for m in [5.0, 4.0, 3.0, 2.0]:
-                    cols_c = int((w_p - 2 * m + g) // (id_w_mm + g))
-                    rows_c = int((h_p - 2 * m + g) // (id_h_mm + g))
-                    if cols_c >= 1 and rows_c >= 1:
-                        cnt = cols_c * rows_c
-                        if best is None or cnt > best["count"]:
-                            best = {"paper_w": w_p, "paper_h": h_p, "cols": cols_c, "rows": rows_c,
-                                    "count": cnt, "gap": g, "margin": m}
+        for g in [1.0, 0.8, 0.5]:
+            for m in [4.0, 3.0, 2.0, 1.0]:
+                cols_c = int((w_p - 2 * m + g) // (id_w_mm + g))
+                rows_c = int((h_p - 2 * m + g) // (id_h_mm + g))
+                if cols_c >= 1 and rows_c >= 1:
+                    cnt = cols_c * rows_c
+                    total_w = cols_c * id_w_mm + (cols_c - 1) * g
+                    total_h = rows_c * id_h_mm + (rows_c - 1) * g
+                    if total_w <= w_p and total_h <= h_p:
+                        if best is None or cnt > best["count"] or (cnt == best["count"] and m > best["margin"]):
+                            best = {
+                                "paper_w": w_p, "paper_h": h_p,
+                                "cols": cols_c, "rows": rows_c, "count": cnt,
+                                "gap": g, "margin": m, "total_w": total_w, "total_h": total_h
+                            }
 
-    if best:
-        pw, ph = best["paper_w"], best["paper_h"]
-        cols, rows, count = best["cols"], best["rows"], best["count"]
-        gap, margin = best["gap"], best["margin"]
-    else:
+    if not best:
         pw, ph = candidate_orientations[0]
         cols, rows, count = 1, 1
         gap, margin = 1.0, 2.0
+    else:
+        pw, ph = best["paper_w"], best["paper_h"]
+        cols, rows, count = best["cols"], best["rows"], best["count"]
+        gap, margin = best["gap"], best["margin"]
 
     return {
         "paper": (mm_to_px(pw), mm_to_px(ph)),
@@ -478,6 +388,8 @@ def compute_layout(paper_w_mm, paper_h_mm, id_w_mm, id_h_mm, orientation="auto")
         "count": count,
         "gap_px": mm_to_px(gap),
         "margin_px": mm_to_px(margin),
+        "gap_mm": gap,
+        "margin_mm": margin,
     }
 
 
@@ -539,7 +451,6 @@ def compose_sheet(id_photo, layout, sheet_color=(255, 255, 255),
     ox = (pw - grid_w) // 2
     oy = (ph - grid_h) // 2
 
-    # 1. 贴照片 + 外框
     border_color = (200, 200, 200)
     for r in range(rows):
         for c in range(cols):
@@ -551,7 +462,6 @@ def compose_sheet(id_photo, layout, sheet_color=(255, 255, 255),
             if cut_lines:
                 _draw_dashed_rect(draw, x, y, x + iw - 1, y + ih - 1, color=(185, 185, 185))
 
-    # 2. 十字裁切延伸线
     if cut_lines:
         mark_color = (160, 160, 160)
         mark_len = 16
@@ -564,7 +474,6 @@ def compose_sheet(id_photo, layout, sheet_color=(255, 255, 255),
             draw.line([(ox - mark_len, y), (ox - 2, y)], fill=mark_color, width=1)
             draw.line([(ox + grid_w + 2, y), (ox + grid_w + mark_len, y)], fill=mark_color, width=1)
 
-    # 3. 顶部相纸与尺寸规范水印
     if size_name:
         txt = f"{size_name} · {size_dims} · 300DPI 标准冲印"
         try:
@@ -575,37 +484,40 @@ def compose_sheet(id_photo, layout, sheet_color=(255, 255, 255),
     return sheet
 
 
-# ============================================================ 照相馆标准规整混排冲印
-def compose_mixed_sheet(id_1in, id_2in, mix_type="6in_landscape_4_6", cut_lines=True, add_text=True):
+# ============================================================ 照相馆标配权威混排冲印方案
+def compose_mixed_sheet(id_1in, id_2in, mix_type="6in_landscape_4_8", cut_lines=True, add_text=True):
     """
-    照相馆标准规整混排：
-    - 6in_landscape_4_6: 6寸横版金牌满幅 (152x102mm) -> 左4张二寸(2x2) + 右6张一寸(3x2) (共10张，最畅销)
-    - 6in_portrait_4_6: 6寸竖版满幅 (102x152mm) -> 上4张二寸(2x2) + 下6张一寸(3x2) (共10张)
-    - 5in_portrait_2_6: 5寸竖版满幅 (89x127mm) -> 上2张二寸(1x2) + 下6张一寸(3x2) (共8张)
-    - 6in_portrait_2_8: 6寸多一寸混排 (102x152mm) -> 上2张二寸(1x2) + 下8张一寸(4x2) (共10张)
+    照相馆权威混排方案：
+    - 6in_landscape_4_8: 6寸横版金牌满排 (152x102mm) -> 左4张二寸(竖 2x2) + 右8张一寸(横放 2x4) (共12张，左右完全等宽等高齐平，最畅销)
+    - 5in_portrait_2_6: 5寸竖版标准满排 (89x127mm) -> 上2张二寸(1x2) + 下6张一寸(3x2) (共8张满幅)
     """
     w_2in, h_2in = mm_to_px(35), mm_to_px(49)
     w_1in, h_1in = mm_to_px(25), mm_to_px(35)
     border_color = (200, 200, 200)
 
-    if mix_type == "6in_landscape_4_6" or mix_type == "6in_4_6":
-        # 6寸横版: 152 x 102 mm -> 左边 4张二寸 (2x2), 右边 6张一寸 (3x2)
+    if mix_type in ("6in_landscape_4_8", "6in_landscape_4_6", "6in_4_8", "6in_4_6", "6in_portrait_4_6", "6in_4_4"):
+        # 6寸横版金牌满排: 152 x 102 mm -> 左边 4张二寸 (竖放 2x2), 右边 8张一寸 (横放 2x4)
         pw, ph = mm_to_px(152), mm_to_px(102)
         sheet = Image.new("RGB", (pw, ph), (255, 255, 255))
         draw = ImageDraw.Draw(sheet)
 
-        gap = mm_to_px(0.8)
-        gap_sec = mm_to_px(3.5)
+        id_1in_rot = id_1in.rotate(-90, expand=True) # 35mm宽 x 25mm高 (413 x 295 px)
 
-        left_w = w_2in * 2 + gap
-        left_h = h_2in * 2 + gap
-        right_w = w_1in * 3 + gap * 2
-        right_h = h_1in * 2 + gap
+        gap = mm_to_px(0.8) # 9 px
+        gap_sec = mm_to_px(3.5) # 41 px
 
-        total_w = left_w + gap_sec + right_w
+        left_w = w_2in * 2 + gap # 71mm (835 px)
+        left_h = h_2in * 2 + gap # 99mm (1167 px)
+
+        w_1in_h, h_1in_h = mm_to_px(35), mm_to_px(25)
+        gap_y_1in = mm_to_px(0.5) # 6 px
+        right_w = w_1in_h * 2 + gap # 71mm (835 px)
+        right_h = h_1in_h * 4 + gap_y_1in * 3 # 101.5mm (1198 px)
+
+        total_w = left_w + gap_sec + right_w # 145.5mm <= 152mm
         ox = (pw - total_w) // 2
 
-        # 左边 4张二寸
+        # 绘制左侧 4张二寸 (垂直居中)
         oy_left = (ph - left_h) // 2
         for r in range(2):
             for c in range(2):
@@ -613,65 +525,25 @@ def compose_mixed_sheet(id_1in, id_2in, mix_type="6in_landscape_4_6", cut_lines=
                 y = oy_left + r * (h_2in + gap)
                 sheet.paste(id_2in, (x, y))
                 draw.rectangle([x, y, x + w_2in - 1, y + h_2in - 1], outline=border_color, width=1)
-                if cut_lines: _draw_dashed_rect(draw, x, y, x + w_2in - 1, y + h_2in - 1)
+                if cut_lines:
+                    _draw_dashed_rect(draw, x, y, x + w_2in - 1, y + h_2in - 1)
 
-        # 右边 6张一寸
+        # 绘制右侧 8张一寸 (横放，垂直居中)
         ox_right = ox + left_w + gap_sec
         oy_right = (ph - right_h) // 2
-        for r in range(2):
-            for c in range(3):
-                x = ox_right + c * (w_1in + gap)
-                y = oy_right + r * (h_1in + gap)
-                sheet.paste(id_1in, (x, y))
-                draw.rectangle([x, y, x + w_1in - 1, y + h_1in - 1], outline=border_color, width=1)
-                if cut_lines: _draw_dashed_rect(draw, x, y, x + w_1in - 1, y + h_1in - 1)
-
-        info = f"6寸横版金牌混排 · 4张二寸 + 6张一寸 (共10张) · {pw}×{ph} px"
-        return sheet, info
-
-    elif mix_type == "6in_portrait_4_6" or mix_type == "6in_4_4":
-        # 6寸竖版: 102 x 152 mm -> 上边 4张二寸 (2x2), 下边 6张一寸 (3x2)
-        pw, ph = mm_to_px(102), mm_to_px(152)
-        sheet = Image.new("RGB", (pw, ph), (255, 255, 255))
-        draw = ImageDraw.Draw(sheet)
-
-        gap = mm_to_px(1.0)
-        gap_sec = mm_to_px(4.0)
-
-        top_w = w_2in * 2 + gap
-        top_h = h_2in * 2 + gap
-        bot_w = w_1in * 3 + gap * 2
-        bot_h = h_1in * 2 + gap
-
-        total_h = top_h + gap_sec + bot_h
-        oy = (ph - total_h) // 2
-
-        # 上部 4张二寸
-        ox_top = (pw - top_w) // 2
-        for r in range(2):
+        for r in range(4):
             for c in range(2):
-                x = ox_top + c * (w_2in + gap)
-                y = oy + r * (h_2in + gap)
-                sheet.paste(id_2in, (x, y))
-                draw.rectangle([x, y, x + w_2in - 1, y + h_2in - 1], outline=border_color, width=1)
-                if cut_lines: _draw_dashed_rect(draw, x, y, x + w_2in - 1, y + h_2in - 1)
+                x = ox_right + c * (w_1in_h + gap)
+                y = oy_right + r * (h_1in_h + gap_y_1in)
+                sheet.paste(id_1in_rot, (x, y))
+                draw.rectangle([x, y, x + w_1in_h - 1, y + h_1in_h - 1], outline=border_color, width=1)
+                if cut_lines:
+                    _draw_dashed_rect(draw, x, y, x + w_1in_h - 1, y + h_1in_h - 1)
 
-        # 下部 6张一寸
-        ox_bot = (pw - bot_w) // 2
-        oy_bot = oy + top_h + gap_sec
-        for r in range(2):
-            for c in range(3):
-                x = ox_bot + c * (w_1in + gap)
-                y = oy_bot + r * (h_1in + gap)
-                sheet.paste(id_1in, (x, y))
-                draw.rectangle([x, y, x + w_1in - 1, y + h_1in - 1], outline=border_color, width=1)
-                if cut_lines: _draw_dashed_rect(draw, x, y, x + w_1in - 1, y + h_1in - 1)
-
-        info = f"6寸竖版混排 · 4张二寸 + 6张一寸 (共10张) · {pw}×{ph} px"
+        info = f"6寸横版金牌满排 · 4张二寸(竖) + 8张一寸(横) · 共12张 · {pw}×{ph} px"
         return sheet, info
 
-    elif mix_type == "5in_portrait_2_6" or mix_type == "5in_2_6" or mix_type == "5in_2_4":
-        # 5寸竖版: 89 x 127 mm -> 上2张二寸 (1x2) + 下6张一寸 (3x2)
+    else: # 5in_portrait_2_6 (5寸竖版标准满排)
         pw, ph = mm_to_px(89), mm_to_px(127)
         sheet = Image.new("RGB", (pw, ph), (255, 255, 255))
         draw = ImageDraw.Draw(sheet)
@@ -694,7 +566,8 @@ def compose_mixed_sheet(id_1in, id_2in, mix_type="6in_landscape_4_6", cut_lines=
             y = oy
             sheet.paste(id_2in, (x, y))
             draw.rectangle([x, y, x + w_2in - 1, y + h_2in - 1], outline=border_color, width=1)
-            if cut_lines: _draw_dashed_rect(draw, x, y, x + w_2in - 1, y + h_2in - 1)
+            if cut_lines:
+                _draw_dashed_rect(draw, x, y, x + w_2in - 1, y + h_2in - 1)
 
         # 下部 6张一寸
         ox_bot = (pw - bot_w) // 2
@@ -705,268 +578,253 @@ def compose_mixed_sheet(id_1in, id_2in, mix_type="6in_landscape_4_6", cut_lines=
                 y = oy_bot + r * (h_1in + gap)
                 sheet.paste(id_1in, (x, y))
                 draw.rectangle([x, y, x + w_1in - 1, y + h_1in - 1], outline=border_color, width=1)
-                if cut_lines: _draw_dashed_rect(draw, x, y, x + w_1in - 1, y + h_1in - 1)
+                if cut_lines:
+                    _draw_dashed_rect(draw, x, y, x + w_1in - 1, y + h_1in - 1)
 
-        info = f"5寸标准混排 · 2张二寸 + 6张一寸 (共8张) · {pw}×{ph} px"
-        return sheet, info
-
-    else: # 6in_portrait_2_8 多一寸版
-        pw, ph = mm_to_px(102), mm_to_px(152)
-        sheet = Image.new("RGB", (pw, ph), (255, 255, 255))
-        draw = ImageDraw.Draw(sheet)
-
-        gap = mm_to_px(1.0)
-        gap_sec = mm_to_px(5.0)
-
-        top_w = w_2in * 2 + gap
-        top_h = h_2in
-        gap_1in = mm_to_px(0.5)
-        bot_w = w_1in * 4 + gap_1in * 3
-        bot_h = h_1in * 2 + gap
-
-        total_h = top_h + gap_sec + bot_h
-        oy = (ph - total_h) // 2
-
-        ox_top = (pw - top_w) // 2
-        for c in range(2):
-            x = ox_top + c * (w_2in + gap)
-            y = oy
-            sheet.paste(id_2in, (x, y))
-            draw.rectangle([x, y, x + w_2in - 1, y + h_2in - 1], outline=border_color, width=1)
-            if cut_lines: _draw_dashed_rect(draw, x, y, x + w_2in - 1, y + h_2in - 1)
-
-        ox_bot = (pw - bot_w) // 2
-        oy_bot = oy + top_h + gap_sec
-        for r in range(2):
-            for c in range(4):
-                x = ox_bot + c * (w_1in + gap_1in)
-                y = oy_bot + r * (h_1in + gap)
-                sheet.paste(id_1in, (x, y))
-                draw.rectangle([x, y, x + w_1in - 1, y + h_1in - 1], outline=border_color, width=1)
-                if cut_lines: _draw_dashed_rect(draw, x, y, x + w_1in - 1, y + h_1in - 1)
-
-        info = f"6寸多一寸混排 · 2张二寸 + 8张一寸 (共10张) · {pw}×{ph} px"
+        info = f"5寸标准满排 · 2张二寸 + 6张一寸 (共8张满幅) · {pw}×{ph} px"
         return sheet, info
 
 
 # ============================================================ 自由多尺寸自定义混排装箱引擎
-def compose_custom_mixed_sheet(images_dict, counts_dict, paper_dict, cut_lines=True, orientation="auto"):
-    pw_mm, ph_mm = paper_dict["w_mm"], paper_dict["h_mm"]
-    dims_map = {
-        "2in": (35, 49, "二寸"),
+def compose_custom_mixed_sheet(images_dict, counts_dict, paper_dict,
+                               cut_lines=True, add_text=True, preferred_orientation="auto"):
+    """
+    智能多规格分栏装箱混排引擎：
+    - 支持任意数量组合
+    - 自动自适应边距与分组分栏
+    """
+    specs_map = {
         "1in": (25, 35, "一寸"),
+        "2in": (35, 49, "二寸"),
         "s_1in": (22, 32, "小一寸"),
         "l_2in": (35, 53, "大二寸"),
     }
 
-    active_groups = []
-    total_req_count = 0
-    for k in ["2in", "1in", "s_1in", "l_2in"]:
-        cnt = counts_dict.get(k, 0)
-        if cnt > 0 and k in images_dict and k in dims_map:
-            w_mm, h_mm, tag = dims_map[k]
-            active_groups.append({
-                "key": k, "w_mm": w_mm, "h_mm": h_mm,
-                "count": cnt, "img": images_dict[k], "tag": tag
+    groups = []
+    for k, cnt in counts_dict.items():
+        if cnt > 0 and k in specs_map and k in images_dict and images_dict[k] is not None:
+            w_mm, h_mm, tag = specs_map[k]
+            groups.append({
+                "key": k,
+                "w_mm": w_mm,
+                "h_mm": h_mm,
+                "count": cnt,
+                "img": images_dict[k],
+                "tag": tag
             })
-            total_req_count += cnt
 
-    if not active_groups:
-        pw_px, ph_px = mm_to_px(pw_mm), mm_to_px(ph_mm)
-        sheet = Image.new("RGB", (pw_px, ph_px), (255, 255, 255))
-        return sheet, "请在左侧设定各尺寸冲印数量", True
+    if not groups:
+        pw = mm_to_px(paper_dict["w_mm"])
+        ph = mm_to_px(paper_dict["h_mm"])
+        sheet = Image.new("RGB", (pw, ph), (255, 255, 255))
+        return sheet, "请至少设定一种尺寸数量 > 0", True
 
-    p_min = min(pw_mm, ph_mm)
-    p_max = max(pw_mm, ph_mm)
+    paper_w = paper_dict["w_mm"]
+    paper_h = paper_dict["h_mm"]
 
-    if orientation == "landscape":
-        candidate_orientations = [(p_max, p_min)]
-    elif orientation == "portrait":
-        candidate_orientations = [(p_min, p_max)]
-    else:
-        candidate_orientations = [(p_max, p_min), (p_min, p_max)]
+    best_solution = None
 
-    best_sol = None
+    for margin_mm in [3.0, 2.5, 2.0, 1.5, 1.0]:
+        for gap_group_mm in [3.0, 2.5, 2.0, 1.5, 1.0]:
+            for gap_mm in [1.0, 0.8, 0.5]:
+                if preferred_orientation == "landscape":
+                    candidate_orientations = [(max(paper_w, paper_h), min(paper_w, paper_h))]
+                elif preferred_orientation == "portrait":
+                    candidate_orientations = [(min(paper_w, paper_h), max(paper_w, paper_h))]
+                else:
+                    candidate_orientations = [
+                        (max(paper_w, paper_h), min(paper_w, paper_h)),
+                        (min(paper_w, paper_h), max(paper_w, paper_h))
+                    ]
 
-    for margin_m in [2.5, 2.0, 1.5, 1.0]:
-        for gap_grp_m in [4.0, 3.0, 2.0, 1.0]:
-            for gap_m in [0.8, 0.5]:
-                for pw_m, ph_m in candidate_orientations:
-                    avail_w = pw_m - 2 * margin_m
-                    avail_h = ph_m - 2 * margin_m
+                for pw, ph in candidate_orientations:
+                    avail_w = pw - 2 * margin_mm
+                    avail_h = ph - 2 * margin_mm
 
-                    if len(active_groups) == 1:
-                        g = active_groups[0]
-                        for cols in range(1, g["count"] + 1):
-                            rows = (g["count"] + cols - 1) // cols
-                            bw = cols * g["w_mm"] + (cols - 1) * gap_m
-                            bh = rows * g["h_mm"] + (rows - 1) * gap_m
+                    if len(groups) == 1:
+                        g = groups[0]
+                        cnt = g["count"]
+                        for cols in range(1, cnt + 1):
+                            rows = (cnt + cols - 1) // cols
+                            bw = cols * g["w_mm"] + (cols - 1) * gap_mm
+                            bh = rows * g["h_mm"] + (rows - 1) * gap_mm
                             if bw <= avail_w and bh <= avail_h:
-                                placed = []
-                                ox_b = (pw_m - bw) / 2.0
-                                oy_b = (ph_m - bh) / 2.0
+                                placed_items = []
+                                ox_b = (pw - bw) / 2.0
+                                oy_b = (ph - bh) / 2.0
                                 idx = 0
                                 for r in range(rows):
                                     for c in range(cols):
-                                        if idx < g["count"]:
-                                            x = ox_b + c * (g["w_mm"] + gap_m)
-                                            y = oy_b + r * (g["h_mm"] + gap_m)
-                                            placed.append((x, y, g["w_mm"], g["h_mm"], g["img"], g["tag"]))
+                                        if idx < cnt:
+                                            x = ox_b + c * (g["w_mm"] + gap_mm)
+                                            y = oy_b + r * (g["h_mm"] + gap_mm)
+                                            placed_items.append((x, y, g["w_mm"], g["h_mm"], g["img"], g["tag"]))
                                             idx += 1
-                                area_used = g["count"] * g["w_mm"] * g["h_mm"]
-                                sol = {"pw": pw_m, "ph": ph_m, "fits": True, "items": placed,
-                                       "util": area_used / (pw_m * ph_m), "count": g["count"]}
-                                if best_sol is None or sol["util"] > best_sol["util"]:
-                                    best_sol = sol
+                                area_used = cnt * g["w_mm"] * g["h_mm"]
+                                sol = {"pw": pw, "ph": ph, "fits": True, "items": placed_items, "util": area_used / (pw * ph), "count": cnt}
+                                if best_solution is None or sol["util"] > best_solution["util"]:
+                                    best_solution = sol
 
-                    elif len(active_groups) == 2:
-                        g1, g2 = active_groups[0], active_groups[1]
-                        # 策略 A: 上下分段
+                    elif len(groups) == 2:
+                        g1, g2 = groups[0], groups[1]
+                        # 策略 A: 左右并列
                         for cols1 in range(1, g1["count"] + 1):
                             rows1 = (g1["count"] + cols1 - 1) // cols1
-                            bw1 = cols1 * g1["w_mm"] + (cols1 - 1) * gap_m
-                            bh1 = rows1 * g1["h_mm"] + (rows1 - 1) * gap_m
-                            if bw1 > avail_w: continue
+                            bw1 = cols1 * g1["w_mm"] + (cols1 - 1) * gap_mm
+                            bh1 = rows1 * g1["h_mm"] + (rows1 - 1) * gap_mm
+                            if bh1 > avail_h:
+                                continue
 
                             for cols2 in range(1, g2["count"] + 1):
                                 rows2 = (g2["count"] + cols2 - 1) // cols2
-                                bw2 = cols2 * g2["w_mm"] + (cols2 - 1) * gap_m
-                                bh2 = rows2 * g2["h_mm"] + (rows2 - 1) * gap_m
-                                if bw2 > avail_w: continue
+                                bw2 = cols2 * g2["w_mm"] + (cols2 - 1) * gap_mm
+                                bh2 = rows2 * g2["h_mm"] + (rows2 - 1) * gap_mm
+                                if bh2 > avail_h:
+                                    continue
 
-                                total_h = bh1 + gap_grp_m + bh2
-                                total_w = max(bw1, bw2)
-                                if total_w <= avail_w and total_h <= avail_h:
-                                    oy = (ph_m - total_h) / 2.0
-                                    ox1 = (pw_m - bw1) / 2.0
-                                    ox2 = (pw_m - bw2) / 2.0
-
-                                    placed = []
-                                    idx = 0
-                                    for r in range(rows1):
-                                        for c in range(cols1):
-                                            if idx < g1["count"]:
-                                                x = ox1 + c * (g1["w_mm"] + gap_m)
-                                                y = oy + r * (g1["h_mm"] + gap_m)
-                                                placed.append((x, y, g1["w_mm"], g1["h_mm"], g1["img"], g1["tag"]))
-                                                idx += 1
-                                    idx = 0
-                                    oy2 = oy + bh1 + gap_grp_m
-                                    for r in range(rows2):
-                                        for c in range(cols2):
-                                            if idx < g2["count"]:
-                                                x = ox2 + c * (g2["w_mm"] + gap_m)
-                                                y = oy2 + r * (g2["h_mm"] + gap_m)
-                                                placed.append((x, y, g2["w_mm"], g2["h_mm"], g2["img"], g2["tag"]))
-                                                idx += 1
-
-                                    area_used = g1["count"] * g1["w_mm"] * g1["h_mm"] + g2["count"] * g2["w_mm"] * g2["h_mm"]
-                                    sol = {"pw": pw_m, "ph": ph_m, "fits": True, "items": placed,
-                                           "util": area_used / (pw_m * ph_m), "count": len(placed)}
-                                    if best_sol is None or sol["util"] > best_sol["util"]:
-                                        best_sol = sol
-
-                        # 策略 B: 左右分段
-                        for cols1 in range(1, g1["count"] + 1):
-                            rows1 = (g1["count"] + cols1 - 1) // cols1
-                            bw1 = cols1 * g1["w_mm"] + (cols1 - 1) * gap_m
-                            bh1 = rows1 * g1["h_mm"] + (rows1 - 1) * gap_m
-                            if bh1 > avail_h: continue
-
-                            for cols2 in range(1, g2["count"] + 1):
-                                rows2 = (g2["count"] + cols2 - 1) // cols2
-                                bw2 = cols2 * g2["w_mm"] + (cols2 - 1) * gap_m
-                                bh2 = rows2 * g2["h_mm"] + (rows2 - 1) * gap_m
-                                if bh2 > avail_h: continue
-
-                                total_w = bw1 + gap_grp_m + bw2
+                                total_w = bw1 + gap_group_mm + bw2
                                 total_h = max(bh1, bh2)
                                 if total_w <= avail_w and total_h <= avail_h:
-                                    ox = (pw_m - total_w) / 2.0
-                                    oy1 = (ph_m - bh1) / 2.0
-                                    oy2 = (ph_m - bh2) / 2.0
+                                    ox = (pw - total_w) / 2.0
+                                    oy1 = (ph - bh1) / 2.0
+                                    oy2 = (ph - bh2) / 2.0
 
-                                    placed = []
+                                    items = []
                                     idx = 0
                                     for r in range(rows1):
                                         for c in range(cols1):
                                             if idx < g1["count"]:
-                                                x = ox + c * (g1["w_mm"] + gap_m)
-                                                y = oy1 + r * (g1["h_mm"] + gap_m)
-                                                placed.append((x, y, g1["w_mm"], g1["h_mm"], g1["img"], g1["tag"]))
+                                                x = ox + c * (g1["w_mm"] + gap_mm)
+                                                y = oy1 + r * (g1["h_mm"] + gap_mm)
+                                                items.append((x, y, g1["w_mm"], g1["h_mm"], g1["img"], g1["tag"]))
                                                 idx += 1
                                     idx = 0
-                                    ox2 = ox + bw1 + gap_grp_m
+                                    ox2 = ox + bw1 + gap_group_mm
                                     for r in range(rows2):
                                         for c in range(cols2):
                                             if idx < g2["count"]:
-                                                x = ox2 + c * (g2["w_mm"] + gap_m)
-                                                y = oy2 + r * (g2["h_mm"] + gap_m)
-                                                placed.append((x, y, g2["w_mm"], g2["h_mm"], g2["img"], g2["tag"]))
+                                                x = ox2 + c * (g2["w_mm"] + gap_mm)
+                                                y = oy2 + r * (g2["h_mm"] + gap_mm)
+                                                items.append((x, y, g2["w_mm"], g2["h_mm"], g2["img"], g2["tag"]))
                                                 idx += 1
 
                                     area_used = g1["count"] * g1["w_mm"] * g1["h_mm"] + g2["count"] * g2["w_mm"] * g2["h_mm"]
-                                    sol = {"pw": pw_m, "ph": ph_m, "fits": True, "items": placed,
-                                           "util": area_used / (pw_m * ph_m), "count": len(placed)}
-                                    if best_sol is None or sol["util"] > best_sol["util"]:
-                                        best_sol = sol
+                                    sol = {"pw": pw, "ph": ph, "fits": True, "items": items, "util": area_used / (pw * ph), "count": len(items)}
+                                    if best_solution is None or sol["util"] > best_solution["util"]:
+                                        best_solution = sol
 
-                    if best_sol and best_sol.get("fits"): break
-                if best_sol and best_sol.get("fits"): break
-            if best_sol and best_sol.get("fits"): break
+                        # 策略 B: 上下并列
+                        for cols1 in range(1, g1["count"] + 1):
+                            rows1 = (g1["count"] + cols1 - 1) // cols1
+                            bw1 = cols1 * g1["w_mm"] + (cols1 - 1) * gap_mm
+                            bh1 = rows1 * g1["h_mm"] + (rows1 - 1) * gap_mm
+                            if bw1 > avail_w:
+                                continue
 
-    if best_sol is None or not best_sol.get("fits"):
-        pw_m, ph_m = candidate_orientations[0]
-        margin_m = 2.0
-        gap_m = 0.8
+                            for cols2 in range(1, g2["count"] + 1):
+                                rows2 = (g2["count"] + cols2 - 1) // cols2
+                                bw2 = cols2 * g2["w_mm"] + (cols2 - 1) * gap_mm
+                                bh2 = rows2 * g2["h_mm"] + (rows2 - 1) * gap_mm
+                                if bw2 > avail_w:
+                                    continue
 
-        flat_items = []
-        for g in sorted(active_groups, key=lambda x: (x["h_mm"], x["w_mm"]), reverse=True):
-            for _ in range(g["count"]):
-                flat_items.append((g["w_mm"], g["h_mm"], g["img"], g["tag"]))
+                                total_h = bh1 + gap_group_mm + bh2
+                                total_w = max(bw1, bw2)
+                                if total_w <= avail_w and total_h <= avail_h:
+                                    oy = (ph - total_h) / 2.0
+                                    ox1 = (pw - bw1) / 2.0
+                                    ox2 = (pw - bw2) / 2.0
 
-        placed = []
-        cur_x = margin_m
-        cur_y = margin_m
-        row_h = 0
-        fits = True
-        for w_m, h_m, im, tg in flat_items:
-            if cur_x + w_m > pw_m - margin_m:
-                cur_x = margin_m
-                cur_y += row_h + gap_m
-                row_h = 0
-            if cur_y + h_m > ph_m - margin_m:
-                fits = False
+                                    items = []
+                                    idx = 0
+                                    for r in range(rows1):
+                                        for c in range(cols1):
+                                            if idx < g1["count"]:
+                                                x = ox1 + c * (g1["w_mm"] + gap_mm)
+                                                y = oy + r * (g1["h_mm"] + gap_mm)
+                                                items.append((x, y, g1["w_mm"], g1["h_mm"], g1["img"], g1["tag"]))
+                                                idx += 1
+                                    idx = 0
+                                    oy2 = oy + bh1 + gap_group_mm
+                                    for r in range(rows2):
+                                        for c in range(cols2):
+                                            if idx < g2["count"]:
+                                                x = ox2 + c * (g2["w_mm"] + gap_mm)
+                                                y = oy2 + r * (g2["h_mm"] + gap_mm)
+                                                items.append((x, y, g2["w_mm"], g2["h_mm"], g2["img"], g2["tag"]))
+                                                idx += 1
+
+                                    area_used = g1["count"] * g1["w_mm"] * g1["h_mm"] + g2["count"] * g2["w_mm"] * g2["h_mm"]
+                                    sol = {"pw": pw, "ph": ph, "fits": True, "items": items, "util": area_used / (pw * ph), "count": len(items)}
+                                    if best_solution is None or sol["util"] > best_solution["util"]:
+                                        best_solution = sol
+
+                    else:
+                        # 3 组或 4 组 (复杂混排): 2D Shelf 装箱
+                        flat_items = []
+                        for g in sorted(groups, key=lambda x: (x["h_mm"], x["w_mm"]), reverse=True):
+                            for _ in range(g["count"]):
+                                flat_items.append((g["w_mm"], g["h_mm"], g["img"], g["tag"]))
+
+                        placed = []
+                        cur_x = margin_mm
+                        cur_y = margin_mm
+                        row_h = 0
+                        fits = True
+                        for w_m, h_m, im, tg in flat_items:
+                            if cur_x + w_m > pw - margin_mm:
+                                cur_x = margin_mm
+                                cur_y += row_h + gap_mm
+                                row_h = 0
+                            if cur_y + h_m > ph - margin_mm:
+                                fits = False
+                                break
+                            placed.append((cur_x, cur_y, w_m, h_m, im, tg))
+                            cur_x += w_m + gap_mm
+                            if h_m > row_h:
+                                row_h = h_m
+
+                        area_used = sum(it[2] * it[3] for it in placed)
+                        sol = {"pw": pw, "ph": ph, "fits": fits, "items": placed, "util": area_used / (pw * ph), "count": len(placed)}
+                        if best_solution is None or (fits and not best_solution["fits"]) or (fits == best_solution["fits"] and sol["util"] > best_solution["util"]):
+                            best_solution = sol
+
+                if best_solution and best_solution["fits"]:
+                    break
+            if best_solution and best_solution["fits"]:
                 break
-            placed.append((cur_x, cur_y, w_m, h_m, im, tg))
-            cur_x += w_m + gap_m
-            if h_m > row_h:
-                row_h = h_m
+        if best_solution and best_solution["fits"]:
+            break
 
-        area_used = sum(it[2] * it[3] for it in placed)
-        best_sol = {"pw": pw_m, "ph": ph_m, "fits": fits, "items": placed,
-                    "util": area_used / (pw_m * ph_m), "count": len(placed)}
+    if not best_solution:
+        pw = mm_to_px(paper_dict["w_mm"])
+        ph = mm_to_px(paper_dict["h_mm"])
+        sheet = Image.new("RGB", (pw, ph), (255, 255, 255))
+        return sheet, "相纸容量不足以容纳所有设定张数", False
 
-    pw_px = mm_to_px(best_sol["pw"])
-    ph_px = mm_to_px(best_sol["ph"])
+    pw_px = mm_to_px(best_solution["pw"])
+    ph_px = mm_to_px(best_solution["ph"])
     sheet = Image.new("RGB", (pw_px, ph_px), (255, 255, 255))
     draw = ImageDraw.Draw(sheet)
     border_color = (200, 200, 200)
 
-    for x_m, y_m, w_m, h_m, img, tag in best_sol["items"]:
-        x = mm_to_px(x_m)
-        y = mm_to_px(y_m)
-        iw = mm_to_px(w_m)
-        ih = mm_to_px(h_m)
-        if img:
-            sheet.paste(img, (x, y))
-        draw.rectangle([x, y, x + iw - 1, y + ih - 1], outline=border_color, width=1)
+    total_req_count = sum(counts_dict.values())
+    for x_mm, y_mm, w_mm, h_mm, img, tag in best_solution["items"]:
+        x_px = mm_to_px(x_mm)
+        y_px = mm_to_px(y_mm)
+        w_px = mm_to_px(w_mm)
+        h_px = mm_to_px(h_mm)
+        scaled_img = img.resize((w_px, h_px), Image.LANCZOS)
+        sheet.paste(scaled_img, (x_px, y_px))
+        draw.rectangle([x_px, y_px, x_px + w_px - 1, y_px + h_px - 1], outline=border_color, width=1)
         if cut_lines:
-            _draw_dashed_rect(draw, x, y, x + iw - 1, y + ih - 1)
+            _draw_dashed_rect(draw, x_px, y_px, x_px + w_px - 1, y_px + h_px - 1)
 
-    if best_sol["fits"]:
-        info = f"自定义混排成功 · 共 {best_sol['count']} 张 · {best_sol['pw']}×{best_sol['ph']}mm (利用率 {best_sol['util']*100:.1f}%)"
+    fits = best_solution["fits"]
+    placed_count = best_solution["count"]
+    if fits:
+        info = f"{paper_dict['name']} 自定义混排 · 成功排入 {placed_count} 张 (利用率 {best_solution['util']*100:.1f}%) · {pw_px}×{ph_px} px"
     else:
-        info = f"⚠️ 超出相纸容量！已排 {best_sol['count']}/{total_req_count} 张，请减少数量或更换大相纸"
+        info = f"⚠️ 超出相纸容量！已排入 {placed_count}/{total_req_count} 张，请减少张数或更换相纸"
 
-    return sheet, info, best_sol["fits"]
+    return sheet, info, fits

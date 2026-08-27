@@ -8,9 +8,8 @@ ui/main_window.py — 证件照工作室 macOS / Windows 工业级原生桌面�
   - 支持「人像缩放」与「上下/左右位置微调」
 - 照相馆规范相纸排版：
   - 自由选择「相纸朝向」：自动最优 / 强制横版 (Landscape) / 强制竖版 (Portrait)
-  - 5寸竖版 (89x127mm): 上2张二寸 + 下6张一寸 (3列x2行，共8张满幅)
-  - 6寸横版 (152x102mm): 左4张二寸 (2x2) + 右6张一寸 (3x2) (共10张，照相馆最畅销冲印版)
-  - 6寸竖版 (102x152mm): 上4张二寸 (2x2) + 下6张一寸 (3x2) (共10张)
+  - 6寸横版金牌满排 (152x102mm): 左4张二寸(竖 2x2) + 右8张一寸(横放 2x4) (共12张，左右齐平满排，最畅销)
+  - 5寸竖版标准满排 (89x127mm): 上2张二寸(1x2) + 下6张一寸(3x2) (共8张满幅)
 - 自由多尺寸自定义混排装箱引擎
 - 新增「✂️ 手动选区/裁剪人像」交互式工具
 - 线程安全生命周期管理：杜绝 QThread GC 销毁引发的意外退出/崩溃 (Abort Trap: 6)
@@ -99,161 +98,156 @@ QComboBox QAbstractItemView {
     background-color: #ffffff;
     color: #1f2328;
     border: 1px solid #d0d7de;
-    selection-background-color: #f3f4f6;
-    selection-color: #0969da;
+    selection-background-color: #0969da;
+    selection-color: #ffffff;
+    padding: 4px;
 }
 QPushButton {
     background-color: #ffffff;
+    color: #1f2328;
     border: 1px solid #d0d7de;
     border-radius: 6px;
-    padding: 5px 12px;
-    color: #24292f;
+    padding: 6px 12px;
     font-weight: 500;
-    min-height: 22px;
+    min-height: 20px;
 }
 QPushButton:hover {
-    background-color: #f6f8fa;
+    background-color: #f3f4f6;
     border-color: #8c959f;
+}
+QPushButton:pressed {
+    background-color: #e5e7eb;
 }
 QPushButton#PrimaryBtn {
     background-color: #0969da;
-    border: 1px solid #0860ca;
     color: #ffffff;
+    border: 1px solid #0969da;
     font-weight: 600;
-    border-radius: 6px;
-    padding: 8px 16px;
     font-size: 13px;
+    border-radius: 6px;
 }
 QPushButton#PrimaryBtn:hover {
-    background-color: #0860ca;
-}
-QPushButton#PrimaryBtn:disabled {
-    background-color: #80b5ea;
-    border-color: #80b5ea;
+    background-color: #0856b8;
+    border-color: #0856b8;
 }
 QPushButton#SecondaryBtn {
     background-color: #f6f8fa;
+    color: #1f2328;
     border: 1px solid #d0d7de;
-    color: #57606a;
-    font-weight: 500;
-    padding: 4px 8px;
-    font-size: 11px;
 }
-QPushButton#ColorChip {
-    border: 1.5px solid #d0d7de;
-    border-radius: 6px;
-    padding: 4px 6px;
-    font-weight: 600;
-    font-size: 11px;
-    min-height: 20px;
-}
-QPushButton#ColorChip:checked {
-    border: 2px solid #0969da;
-    background-color: #ddf4ff;
-}
-QFrame#DropBox {
-    background-color: #f6f8fa;
-    border: 1.5px dashed #d0d7de;
-    border-radius: 6px;
-}
-QFrame#DropBox:hover, QFrame#DropBox[dragOver="true"] {
-    background-color: #ddf4ff;
-    border-color: #0969da;
-}
-QProgressBar {
+QPushButton#SecondaryBtn:hover {
     background-color: #eaeef2;
-    border: none;
-    border-radius: 2px;
-    height: 4px;
-}
-QProgressBar::chunk {
-    background-color: #0969da;
-    border-radius: 2px;
 }
 QCheckBox {
-    font-size: 11px;
-    color: #24292f;
-    spacing: 5px;
+    spacing: 6px;
+    color: #1f2328;
+}
+QCheckBox::indicator {
+    width: 15px;
+    height: 15px;
+    border-radius: 3px;
+    border: 1px solid #d0d7de;
+    background-color: #ffffff;
+}
+QCheckBox::indicator:checked {
+    background-color: #0969da;
+    border-color: #0969da;
+}
+QSlider::groove:horizontal {
+    height: 4px;
+    background: #e2e8f0;
+    border-radius: 2px;
+}
+QSlider::sub-page:horizontal {
+    background: #0969da;
+    border-radius: 2px;
+}
+QSlider::handle:horizontal {
+    background: #ffffff;
+    border: 2px solid #0969da;
+    width: 14px;
+    margin-top: -5px;
+    margin-bottom: -5px;
+    border-radius: 7px;
 }
 QScrollArea {
     border: none;
     background-color: transparent;
 }
+QFrame#DropBox {
+    background-color: #ffffff;
+    border: 1px dashed #0969da;
+    border-radius: 8px;
+}
+QFrame#DropBox:hover {
+    background-color: #f0f7ff;
+}
 """
 
 
-def pil_to_qimage(img):
-    if img is None:
-        return QImage()
-    from PIL import Image
-    if img.mode != "RGB":
-        img = img.convert("RGB")
-    w, h = img.size
-    data = img.tobytes("raw", "RGB")
-    return QImage(data, w, h, w * 3, QImage.Format_RGB888)
+def pil_to_pixmap(pil_img):
+    if pil_img.mode == "RGBA":
+        fmt = QImage.Format_RGBA8888
+    else:
+        pil_img = pil_img.convert("RGB")
+        fmt = QImage.Format_RGB888
+    data = pil_img.tobytes()
+    qimg = QImage(data, pil_img.width, pil_img.height, pil_img.width * (4 if pil_img.mode == "RGBA" else 3), fmt)
+    return QPixmap.fromImage(qimg)
 
 
-# ============================================================ 交互式人像手动选区/裁剪弹窗
+# ============================================================ 交互式裁剪组件与对话框
 class CropWidget(QWidget):
     def __init__(self, pil_image, aspect_ratio=25.0/35.0, parent=None):
         super().__init__(parent)
-        self.pil_image = pil_image
+        self.pil_image = pil_image.convert("RGB")
         self.aspect_ratio = aspect_ratio
-        self.qimage = pil_to_qimage(pil_image)
-        self.pixmap = QPixmap.fromImage(self.qimage)
+        self.setMouseTracking(True)
 
-        crop_h = 0.85
-        crop_w = crop_h * self.aspect_ratio * (pil_image.size[1] / pil_image.size[0])
-        if crop_w > 0.95:
-            crop_w = 0.95
-            crop_h = crop_w / self.aspect_ratio * (pil_image.size[0] / pil_image.size[1])
-
-        self.rel_x = (1.0 - crop_w) / 2.0
-        self.rel_y = 0.05
-        self.rel_w = crop_w
-        self.rel_h = crop_h
+        self.rel_x = 0.15
+        self.rel_y = 0.08
+        self.rel_w = 0.70
+        self.rel_h = self.rel_w / self.aspect_ratio * (self.pil_image.size[0] / self.pil_image.size[1])
+        if self.rel_h > 0.85:
+            self.rel_h = 0.85
+            self.rel_w = self.rel_h * self.aspect_ratio * (self.pil_image.size[1] / self.pil_image.size[0])
 
         self.dragging = False
         self.resizing = False
         self.drag_start = QPoint()
 
-    def get_cropped_pil_image(self):
-        orig_w, orig_h = self.pil_image.size
-        x1 = max(0, int(round(self.rel_x * orig_w)))
-        y1 = max(0, int(round(self.rel_y * orig_h)))
-        x2 = min(orig_w, int(round((self.rel_x + self.rel_w) * orig_w)))
-        y2 = min(orig_h, int(round((self.rel_y + self.rel_h) * orig_h)))
-        return self.pil_image.crop((x1, y1, x2, y2))
-
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 
-        painter.fillRect(self.rect(), QColor("#0f172a"))
-
         vw, vh = self.width(), self.height()
-        scaled_pix = self.pixmap.scaled(vw, vh, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        self.img_rect = QRect((vw - scaled_pix.width()) // 2, (vh - scaled_pix.height()) // 2,
-                              scaled_pix.width(), scaled_pix.height())
-        painter.drawPixmap(self.img_rect.topLeft(), scaled_pix)
+        iw, ih = self.pil_image.size
 
-        cx = self.img_rect.x() + int(self.rel_x * self.img_rect.width())
-        cy = self.img_rect.y() + int(self.rel_y * self.img_rect.height())
-        cw = int(self.rel_w * self.img_rect.width())
-        ch = int(self.rel_h * self.img_rect.height())
+        scale = min(vw / iw, vh / ih) * 0.95
+        nw, nh = int(iw * scale), int(ih * scale)
+        ox, oy = (vw - nw) // 2, (vh - nh) // 2
+        self.img_rect = QRect(ox, oy, nw, nh)
+
+        pix = pil_to_pixmap(self.pil_image).scaled(nw, nh, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        painter.drawPixmap(ox, oy, pix)
+
+        cx = ox + int(self.rel_x * nw)
+        cy = oy + int(self.rel_y * nh)
+        cw = int(self.rel_w * nw)
+        ch = int(self.rel_h * nh)
         self.crop_rect = QRect(cx, cy, cw, ch)
 
-        mask_color = QColor(0, 0, 0, 160)
-        painter.fillRect(QRect(0, 0, vw, cy), mask_color)
-        painter.fillRect(QRect(0, cy + ch, vw, vh - (cy + ch)), mask_color)
-        painter.fillRect(QRect(0, cy, cx, ch), mask_color)
-        painter.fillRect(QRect(cx + cw, cy, vw - (cx + cw), ch), mask_color)
+        mask_color = QColor(0, 0, 0, 140)
+        painter.fillRect(QRect(ox, oy, nw, cy - oy), mask_color)
+        painter.fillRect(QRect(ox, cy + ch, nw, oy + nh - (cy + ch)), mask_color)
+        painter.fillRect(QRect(ox, cy, cx - ox, ch), mask_color)
+        painter.fillRect(QRect(cx + cw, cy, ox + nw - (cx + cw), ch), mask_color)
 
         pen = QPen(QColor("#0969da"), 2)
         painter.setPen(pen)
         painter.drawRect(self.crop_rect)
 
-        pen_grid = QPen(QColor(255, 255, 255, 100), 1, Qt.DashLine)
+        pen_grid = QPen(QColor(255, 255, 255, 120), 1, Qt.DashLine)
         painter.setPen(pen_grid)
         painter.drawLine(cx + cw // 3, cy, cx + cw // 3, cy + ch)
         painter.drawLine(cx + 2 * cw // 3, cy, cx + 2 * cw // 3, cy + ch)
@@ -347,16 +341,28 @@ class CropDialog(QDialog):
         layout.addLayout(btn_row)
 
     def apply_crop(self):
-        self.cropped_image = self.crop_widget.get_cropped_pil_image()
+        cw = self.crop_widget
+        iw, ih = cw.pil_image.size
+        x1 = int(round(cw.rel_x * iw))
+        y1 = int(round(cw.rel_y * ih))
+        x2 = int(round((cw.rel_x + cw.rel_w) * iw))
+        y2 = int(round((cw.rel_y + cw.rel_h) * ih))
+
+        x1 = max(0, min(iw - 10, x1))
+        y1 = max(0, min(ih - 10, y1))
+        x2 = max(x1 + 10, min(iw, x2))
+        y2 = max(y1 + 10, min(ih, y2))
+
+        self.cropped_image = cw.pil_image.crop((x1, y1, x2, y2))
         self.accept()
 
 
-# ============================================================ 后台 Worker
+# ============================================================ 异步发丝抠图线程
 class MattingWorker(QThread):
     done = Signal(object, int)
     failed = Signal(str, int)
 
-    def __init__(self, image_input, req_id=0):
+    def __init__(self, image_input, req_id):
         super().__init__()
         self.image_input = image_input
         self.req_id = req_id
@@ -369,22 +375,19 @@ class MattingWorker(QThread):
             else:
                 img = self.image_input
             m = core.Matting()
-            if not m.available():
-                self.failed.emit("未找到抠图模型，已转为原图裁切", self.req_id)
-                return
             rgba = m.remove(img)
             self.done.emit(rgba, self.req_id)
         except Exception as e:
-            self.failed.emit(f"抠图失败：{e}", self.req_id)
+            self.failed.emit(str(e), self.req_id)
 
 
+# ============================================================ 异步冲印排版渲染线程
 class RenderWorker(QThread):
     done = Signal(object, str, bool, object, int)
     error = Signal(str, int)
 
     def __init__(self, image_input, size_dict, color_dict, mode_idx, extra_params,
-                 cut_lines, add_text, cached_rgba=None, req_id=0,
-                 zoom_ratio=1.0, offset_y_ratio=0.0, offset_x_ratio=0.0):
+                 cut_lines, add_text, cached_rgba, req_id, zoom_ratio=1.0, offset_y_ratio=0.0, offset_x_ratio=0.0):
         super().__init__()
         self.image_input = image_input
         self.size_dict = size_dict
@@ -430,7 +433,7 @@ class RenderWorker(QThread):
 
             # 2: 照相馆标准规整混排
             if self.mode_idx == 2:
-                mix_type = self.extra_params.get("mix_type", "6in_landscape_4_6")
+                mix_type = self.extra_params.get("mix_type", "6in_landscape_4_8")
                 if self.cached_rgba is not None:
                     id_1in = core.create_standard_id_photo(self.cached_rgba, core.mm_to_px(25), core.mm_to_px(35), bg_rgb,
                                                            zoom_ratio=self.zoom_ratio, offset_y_ratio=self.offset_y_ratio, offset_x_ratio=self.offset_x_ratio)
@@ -462,7 +465,7 @@ class RenderWorker(QThread):
                         images_dict[k] = core.prepare_id_photo(img, core.mm_to_px(w_mm), core.mm_to_px(h_mm), bg_rgb, matting,
                                                                zoom_ratio=self.zoom_ratio, offset_y_ratio=self.offset_y_ratio, offset_x_ratio=self.offset_x_ratio)
 
-                sheet, info, fits = core.compose_custom_mixed_sheet(images_dict, counts, paper, cut_lines=self.cut_lines, orientation=ori)
+                sheet, info, fits = core.compose_custom_mixed_sheet(images_dict, counts, paper, cut_lines=self.cut_lines, preferred_orientation=ori)
                 self.done.emit(sheet, info, False, id_photo, self.req_id)
                 return
 
@@ -470,7 +473,7 @@ class RenderWorker(QThread):
             ori = self.extra_params.get("orientation", "auto")
             if self.mode_idx == 1:
                 p = self.extra_params["paper"]
-                lay = core.compute_layout(p["w_mm"], p["h_mm"], self.size_dict["w_mm"], self.size_dict["h_mm"], orientation=ori)
+                lay = core.compute_layout(p["w_mm"], p["h_mm"], self.size_dict["w_mm"], self.size_dict["h_mm"], preferred_orientation=ori)
             else:
                 p = self.extra_params.get("paper", core.load_papers()[1])
                 lay = core.compute_layout_grid(self.size_dict["w_mm"], self.size_dict["h_mm"],
@@ -496,7 +499,7 @@ class RenderWorker(QThread):
             self.error.emit(f"{e}\n{traceback.format_exc()[-300:]}", self.req_id)
 
 
-# ============================================================ 批量处理
+# ============================================================ 批量处理对话框
 class BatchWorker(QThread):
     progress = Signal(int, int, str)
     finished = Signal(int, list)
@@ -598,94 +601,104 @@ class BatchDialog(QDialog):
         fl.addWidget(self.lbl_file_count)
         layout.addWidget(f_box)
 
-        opt_box = QFrame(); opt_box.setObjectName("Card")
-        ol = QFormLayout(opt_box); ol.setContentsMargins(12, 10, 12, 10); ol.setSpacing(8)
-        self.batch_size = QComboBox()
-        for s in core.load_sizes():
-            self.batch_size.addItem(f"{s['name']} ({s['w_mm']}×{s['h_mm']}mm)", s)
-        ol.addRow("目标规格:", self.batch_size)
+        p_box = QFrame(); p_box.setObjectName("Card")
+        pl = QVBoxLayout(p_box); pl.setContentsMargins(12, 10, 12, 10); pl.setSpacing(8)
+        pl.addWidget(QLabel("2. 统一输出规格与底色:"))
 
-        self.batch_color = QComboBox()
-        for c in core.load_colors():
-            self.batch_color.addItem(c["name"], c)
-        ol.addRow("目标底色:", self.batch_color)
+        form = QFormLayout()
+        form.setSpacing(8)
+        self.b_size_combo = QComboBox()
+        for s in core.load_presets():
+            self.b_size_combo.addItem(s["name"], s)
+        form.addRow("目标证件照规格:", self.b_size_combo)
 
-        self.batch_paper = QComboBox()
+        self.b_color_combo = QComboBox()
+        for c in core.BUILTIN_COLORS:
+            self.b_color_combo.addItem(c[1], {"key": c[0], "name": c[1], "rgb": c[2]})
+        form.addRow("替换背景底色:", self.b_color_combo)
+
+        self.b_paper_combo = QComboBox()
         for p in core.load_papers():
-            self.batch_paper.addItem(p["name"], p)
-        ol.addRow("冲印相纸:", self.batch_paper)
+            self.b_paper_combo.addItem(p["name"], p)
+        form.addRow("排版冲印相纸:", self.b_paper_combo)
 
-        self.batch_fmt = QComboBox()
-        self.batch_fmt.addItem("PNG + JPG (两种都要)", "both")
-        self.batch_fmt.addItem("仅导出 PNG (高清无损)", "png")
-        self.batch_fmt.addItem("仅导出 JPG (冲印格式)", "jpg")
-        ol.addRow("导出格式:", self.batch_fmt)
+        self.b_export_fmt = QComboBox()
+        self.b_export_fmt.addItem("PNG + JPG (两种格式都导出)", "both")
+        self.b_export_fmt.addItem("仅导出 PNG", "png")
+        self.b_export_fmt.addItem("仅导出 JPG", "jpg")
+        form.addRow("导出格式:", self.b_export_fmt)
 
-        self.chk_single = QCheckBox("导出单张证件照"); self.chk_single.setChecked(True)
-        self.chk_sheet = QCheckBox("导出冲印排版图"); self.chk_sheet.setChecked(True)
-        ol.addRow("导出内容:", self.chk_single)
-        ol.addRow("", self.chk_sheet)
-        layout.addWidget(opt_box)
+        pl.addLayout(form)
+
+        chk_row = QHBoxLayout()
+        self.chk_exp_single = QCheckBox("同时导出单张证件照")
+        self.chk_exp_single.setChecked(True)
+        self.chk_exp_sheet = QCheckBox("同时导出相纸冲印排版")
+        self.chk_exp_sheet.setChecked(True)
+        chk_row.addWidget(self.chk_exp_single)
+        chk_row.addWidget(self.chk_exp_sheet)
+        pl.addLayout(chk_row)
+        layout.addWidget(p_box)
 
         self.pbar = QProgressBar()
         self.pbar.setVisible(False)
         layout.addWidget(self.pbar)
-        self.lbl_status = QLabel("就绪")
+        self.lbl_status = QLabel("")
         self.lbl_status.setObjectName("SubTitle")
         layout.addWidget(self.lbl_status)
 
-        action_row = QHBoxLayout()
-        self.btn_run = QPushButton("开始批量处理并保存…")
-        self.btn_run.setObjectName("PrimaryBtn")
-        self.btn_run.clicked.connect(self.start_batch)
+        b_row = QHBoxLayout()
         b_close = QPushButton("关闭")
         b_close.clicked.connect(self.reject)
-        action_row.addStretch()
-        action_row.addWidget(b_close)
-        action_row.addWidget(self.btn_run)
-        layout.addLayout(action_row)
+        self.btn_start = QPushButton("🚀 开始批量处理并导出")
+        self.btn_start.setObjectName("PrimaryBtn")
+        self.btn_start.clicked.connect(self.start_batch)
+        b_row.addStretch()
+        b_row.addWidget(b_close)
+        b_row.addWidget(self.btn_start)
+        layout.addLayout(b_row)
 
     def select_files(self):
-        paths, _ = QFileDialog.getOpenFileNames(
-            self, "多选人像照片", "", "图片文件 (*.jpg *.jpeg *.png *.webp *.bmp)"
-        )
-        if paths:
-            self.file_paths = paths
-            self.lbl_file_count.setText(f"已选择 {len(paths)} 张照片文件")
+        files, _ = QFileDialog.getOpenFileNames(self, "多选照片", "", "图片 (*.png *.jpg *.jpeg *.webp *.bmp)")
+        if files:
+            self.file_paths = files
+            self.lbl_file_count.setText(f"已选 {len(files)} 张照片")
 
     def select_dir(self):
-        d = QFileDialog.getExistingDirectory(self, "选择包含人像照片的文件夹")
+        d = QFileDialog.getExistingDirectory(self, "选择包含照片的文件夹")
         if d:
-            exts = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
-            found = [os.path.join(d, f) for f in os.listdir(d) if os.path.splitext(f)[1].lower() in exts]
+            valid_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+            found = [os.path.join(d, f) for f in os.listdir(d) if os.path.splitext(f)[1].lower() in valid_exts]
             if found:
-                self.file_paths = found
-                self.lbl_file_count.setText(f"文件夹内共找到 {len(found)} 张照片")
+                self.file_paths = sorted(found)
+                self.lbl_file_count.setText(f"从文件夹载入 {len(found)} 张照片")
             else:
-                QMessageBox.information(self, "提示", "所选文件夹内未找到支持的图片文件")
+                QMessageBox.warning(self, "提示", "所选文件夹内未找到图片文件")
 
     def start_batch(self):
         if not self.file_paths:
-            QMessageBox.warning(self, "提示", "请先选择需要批量处理的照片")
+            QMessageBox.warning(self, "提示", "请先选择要处理的照片文件")
             return
-        out_dir = QFileDialog.getExistingDirectory(self, "选择批量导出保存的文件夹")
+
+        out_dir = QFileDialog.getExistingDirectory(self, "选择批量结果保存目录")
         if not out_dir:
             return
 
-        size_dict = self.batch_size.currentData()
-        color_dict = self.batch_color.currentData()
-        paper_dict = self.batch_paper.currentData()
-        export_fmt = self.batch_fmt.currentData()
-
-        self.btn_run.setEnabled(False)
+        self.btn_start.setEnabled(False)
         self.pbar.setVisible(True)
         self.pbar.setRange(0, len(self.file_paths))
         self.pbar.setValue(0)
 
+        s_dict = self.b_size_combo.currentData()
+        c_dict = self.b_color_combo.currentData()
+        p_dict = self.b_paper_combo.currentData()
+        fmt = self.b_export_fmt.currentData()
+
         self.worker = BatchWorker(
-            self.file_paths, size_dict, color_dict,
-            self.chk_single.isChecked(), self.chk_sheet.isChecked(),
-            paper_dict, export_fmt, out_dir
+            self.file_paths, s_dict, c_dict,
+            self.chk_exp_single.isChecked(),
+            self.chk_exp_sheet.isChecked(),
+            p_dict, fmt, out_dir
         )
         self.worker.progress.connect(self.on_progress)
         self.worker.finished.connect(self.on_finished)
@@ -697,66 +710,66 @@ class BatchDialog(QDialog):
         self.lbl_status.setText(f"正在处理 ({cur}/{total}): {fname}")
 
     def on_finished(self, count, saved):
-        self.btn_run.setEnabled(True)
-        self.lbl_status.setText(f"✓ 批量处理完成！共导出 {count} 份文件。")
-        QMessageBox.information(self, "完成", f"批量处理完成！\n已成功生成 {count} 份证件照/排版文件。")
+        self.btn_start.setEnabled(True)
+        self.pbar.setVisible(False)
+        self.lbl_status.setText(f"✓ 批量处理完成！共生成 {count} 份文件")
+        QMessageBox.information(self, "完成", f"批量处理完成！\n已生成 {count} 份证件照与排版文件。")
 
     def on_error(self, err):
-        self.btn_run.setEnabled(True)
-        self.lbl_status.setText("处理失败")
-        QMessageBox.critical(self, "错误", f"批量处理发生错误：{err}")
+        self.btn_start.setEnabled(True)
+        self.pbar.setVisible(False)
+        QMessageBox.critical(self, "错误", f"批量处理出错：{err}")
 
 
 # ============================================================ 主窗口
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("证件照工作室 Studio")
-        self.setMinimumSize(1020, 720)
+        self.setWindowTitle("证件照工作室 Studio · 专业版")
+        self.setMinimumSize(980, 680)
+
+        self.settings = QSettings("IDPhotoStudio", "DesktopApp")
+        geo = self.settings.value("geometry")
+        if geo:
+            self.restoreGeometry(geo)
+        else:
+            self.resize(1120, 740)
+
         self.setAcceptDrops(True)
 
-        self.settings = QSettings("IDPhotoStudio", "Settings")
-        self.input_path = None
         self.raw_pil_image = None
         self.active_pil_image = None
+        self.input_path = ""
         self.cached_rgba = None
         self.current_preview_image = None
         self.current_single_id = None
-        self.is_single_preview = True
+        self.is_single_view = True
 
-        # 线程安全引用保护池 (防止 GC 析构运行中线程导致 abort 崩溃)
-        self._running_threads = []
         self._render_req_id = 0
         self._matting_req_id = 0
+        self._running_threads = []
 
         self.render_timer = QTimer(self)
         self.render_timer.setSingleShot(True)
         self.render_timer.timeout.connect(self._do_render)
 
-        self._build_ui()
-        self._load_state()
+        self.init_ui()
 
-    def _build_ui(self):
-        central = QWidget(self)
-        self.setCentralWidget(central)
-        main_layout = QHBoxLayout(central)
-        main_layout.setContentsMargins(12, 12, 12, 12)
-        main_layout.setSpacing(10)
-
+    def init_ui(self):
         splitter = QSplitter(Qt.Horizontal)
-        splitter.setHandleWidth(4)
+        splitter.setHandleWidth(1)
 
-        # ----------------- 左侧控制面板 (原生 macOS 风格) -----------------
-        left_container = QWidget()
-        left_container.setMinimumWidth(390)
-        left_container.setMaximumWidth(460)
-        left_box = QVBoxLayout(left_container)
-        left_box.setContentsMargins(0, 0, 0, 0)
-        left_box.setSpacing(8)
+        # ------------------------------------------------ 左侧控制面板 (固定宽度 380px)
+        left_box = QWidget()
+        left_box.setFixedWidth(380)
+        left_v = QVBoxLayout(left_box)
+        left_v.setContentsMargins(8, 8, 8, 8)
+        left_v.setSpacing(0)
 
         left_scroll = QScrollArea()
         left_scroll.setWidgetResizable(True)
         left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        left_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
@@ -820,14 +833,14 @@ class MainWindow(QMainWindow):
         tool_row.addWidget(self.btn_reset_crop)
         cl.addLayout(tool_row)
 
-        # 人像构图微调工具栏 (可自由调节人像缩放与位置)
+        # 人像构图微调控制器
         framing_box = QFrame()
         framing_l = QVBoxLayout(framing_box); framing_l.setContentsMargins(0, 4, 0, 0); framing_l.setSpacing(4)
-        
+
         row_zoom = QHBoxLayout()
         row_zoom.addWidget(QLabel("人像大小:"))
         self.slider_zoom = QSlider(Qt.Horizontal)
-        self.slider_zoom.setRange(70, 140) # 70% ~ 140%
+        self.slider_zoom.setRange(70, 140)
         self.slider_zoom.setValue(100)
         self.slider_zoom.valueChanged.connect(self.schedule_render)
         row_zoom.addWidget(self.slider_zoom)
@@ -840,7 +853,7 @@ class MainWindow(QMainWindow):
         row_pos = QHBoxLayout()
         row_pos.addWidget(QLabel("上下位置:"))
         self.slider_pos_y = QSlider(Qt.Horizontal)
-        self.slider_pos_y.setRange(-20, 20) # -20% ~ +20%
+        self.slider_pos_y.setRange(-20, 20)
         self.slider_pos_y.setValue(0)
         self.slider_pos_y.valueChanged.connect(self.schedule_render)
         row_pos.addWidget(self.slider_pos_y)
@@ -857,45 +870,50 @@ class MainWindow(QMainWindow):
         cl.addWidget(self.progress_bar)
         left_layout.addWidget(card_import)
 
-        # 2. 规格与底色
+        # 2. 证件规格与背景底色
         card_spec = QFrame(); card_spec.setObjectName("Card")
         sl = QVBoxLayout(card_spec); sl.setContentsMargins(12, 10, 12, 10); sl.setSpacing(8)
-        sl.addWidget(QLabel("2. 规格与底色", objectName="SectionTitle"))
-
-        self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("🔍 搜索规格：一寸 / 二寸 / 护照 / 签证…")
-        self.search_edit.textChanged.connect(self.on_search_changed)
-        sl.addWidget(self.search_edit)
+        sl.addWidget(QLabel("2. 证件规格与背景底色", objectName="SectionTitle"))
 
         self.size_combo = QComboBox()
-        self._populate_sizes()
-        self.size_combo.currentIndexChanged.connect(self.on_size_changed)
+        for s in core.load_presets():
+            self.size_combo.addItem(s["name"], s)
+        self.size_combo.currentIndexChanged.connect(self.schedule_render)
         sl.addWidget(self.size_combo)
 
-        self.lbl_spec_badge = QLabel("规格: 25 × 35 mm · 295 × 413 px @ 300DPI")
-        self.lbl_spec_badge.setObjectName("Badge")
-        sl.addWidget(self.lbl_spec_badge)
-
-        sl.addWidget(QLabel("背景底色:"))
-        color_grid = QGridLayout(); color_grid.setSpacing(6)
+        sl.addWidget(QLabel("选择替换底色:"))
+        color_grid = QGridLayout()
+        color_grid.setSpacing(6)
+        color_grid.setContentsMargins(0, 0, 0, 0)
         self.color_btn_group = QButtonGroup(self)
         self.color_btn_group.setExclusive(True)
 
-        self.colors_data = core.load_colors()
-        for idx, c in enumerate(self.colors_data):
-            btn = QPushButton(c["name"].split(" ")[0])
-            btn.setObjectName("ColorChip")
+        self.colors_data = []
+        for idx, (ckey, cname, crgb, chex) in enumerate(core.BUILTIN_COLORS):
+            self.colors_data.append({"key": ckey, "name": cname, "rgb": crgb, "hex": chex})
+            btn = QPushButton(cname.split(" ")[0])
             btn.setCheckable(True)
-            if c["hex"] and c["hex"] != "#ffffff" and c["hex"] != "#e2e8f0":
-                btn.setStyleSheet(f"background-color: {c['hex']}; color: #ffffff;")
-            elif c["hex"] == "#ffffff":
-                btn.setStyleSheet("background-color: #ffffff; color: #1f2328; border: 1.5px solid #d0d7de;")
-            self.color_btn_group.addButton(btn, idx)
-            color_grid.addWidget(btn, idx // 4, idx % 4)
+            btn.setFixedHeight(28)
+            border_css = "border: 1px solid #d0d7de;"
+            if crgb == (255, 255, 255):
+                btn_css = f"background-color: #ffffff; color: #1f2937; {border_css}"
+            elif crgb is None:
+                btn_css = "background-color: #f1f5f9; color: #475569; border: 1px dashed #94a3b8;"
+            else:
+                text_c = "#ffffff" if (ckey in ("blue", "red", "dark_blue")) else "#1f2937"
+                btn_css = f"background-color: {chex}; color: {text_c}; border: none;"
+
+            btn.setStyleSheet(f"""
+                QPushButton {{ {btn_css} border-radius: 4px; font-weight: 500; font-size: 12px; }}
+                QPushButton:checked {{ border: 2px solid #0969da; font-weight: 700; }}
+            """)
             if idx == 0:
                 btn.setChecked(True)
+            self.color_btn_group.addButton(btn, idx)
+            color_grid.addWidget(btn, idx // 4, idx % 4)
 
         btn_custom_c = QPushButton("🎨 自定义")
+        btn_custom_c.setFixedHeight(28)
         btn_custom_c.setObjectName("SecondaryBtn")
         btn_custom_c.clicked.connect(self.pick_custom_color)
         color_grid.addWidget(btn_custom_c, len(self.colors_data) // 4, len(self.colors_data) % 4)
@@ -943,15 +961,13 @@ class MainWindow(QMainWindow):
         pl.addWidget(self.paper_container)
         self.paper_container.setVisible(False)
 
-        # 经典混排类型容器 (模式 2)
+        # 经典混排类型容器 (模式 2 · 精简权威两款)
         self.mix_container = QWidget()
         mix_l = QVBoxLayout(self.mix_container); mix_l.setContentsMargins(0, 0, 0, 0); mix_l.setSpacing(4)
         mix_l.addWidget(QLabel("照相馆标准混排方案:"))
         self.mix_combo = QComboBox()
-        self.mix_combo.addItem("6寸横版金牌混排 · 4张二寸 + 6张一寸 (共10张 · 最畅销)", "6in_landscape_4_6")
-        self.mix_combo.addItem("6寸竖版经典混排 · 4张二寸 + 6张一寸 (共10张)", "6in_portrait_4_6")
-        self.mix_combo.addItem("5寸标准混排 · 2张二寸 + 6张一寸 (共8张满幅)", "5in_portrait_2_6")
-        self.mix_combo.addItem("6寸多一寸混排 · 2张二寸 + 8张一寸 (共10张)", "6in_portrait_2_8")
+        self.mix_combo.addItem("6寸横版金牌满排 · 4张二寸(竖) + 8张一寸(横) (共12张 · 最畅销)", "6in_landscape_4_8")
+        self.mix_combo.addItem("5寸标准满排 · 2张二寸 + 6张一寸 (共8张满幅)", "5in_portrait_2_6")
         self.mix_combo.currentIndexChanged.connect(self.schedule_render)
         mix_l.addWidget(self.mix_combo)
         pl.addWidget(self.mix_container)
@@ -1029,7 +1045,7 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(card_print)
         left_layout.addStretch()
         left_scroll.setWidget(left_widget)
-        left_box.addWidget(left_scroll, 1)
+        left_v.addWidget(left_scroll, 1)
 
         # 4. 固定底部操作与导出卡片
         bottom_card = QFrame(); bottom_card.setObjectName("Card")
@@ -1040,167 +1056,94 @@ class MainWindow(QMainWindow):
         self.combo_export_fmt = QComboBox()
         self.combo_export_fmt.addItem("PNG + JPG (两种都要 · 推荐)", "both")
         self.combo_export_fmt.addItem("仅导出 PNG (高清无损)", "png")
-        self.combo_export_fmt.addItem("仅导出 JPG (冲印格式)", "jpg")
+        self.combo_export_fmt.addItem("仅导出 JPG (高品质冲印格式)", "jpg")
         fmt_row.addWidget(self.combo_export_fmt, 1)
         bl.addLayout(fmt_row)
 
-        self.btn_export = QPushButton("💾 导出高清照片/排版")
+        btn_row_exp = QHBoxLayout()
+        self.btn_export = QPushButton("💾 导出当前冲印图")
         self.btn_export.setObjectName("PrimaryBtn")
-        self.btn_export.clicked.connect(self.export_result)
-        bl.addWidget(self.btn_export)
+        self.btn_export.setFixedHeight(36)
+        self.btn_export.clicked.connect(self.export_image)
+        btn_row_exp.addWidget(self.btn_export)
+        bl.addLayout(btn_row_exp)
 
-        b_row = QHBoxLayout(); b_row.setSpacing(6)
-        b_preset = QPushButton("⚙️ 预设管理…"); b_preset.setObjectName("SecondaryBtn")
-        b_preset.clicked.connect(self.open_preset_dialog)
-        b_batch = QPushButton("📂 批量处理…"); b_batch.setObjectName("SecondaryBtn")
-        b_batch.clicked.connect(self.open_batch_dialog)
-        b_refresh = QPushButton("🔄 刷新"); b_refresh.setObjectName("SecondaryBtn")
-        b_refresh.clicked.connect(self.schedule_render)
-        b_row.addWidget(b_preset); b_row.addWidget(b_batch); b_row.addWidget(b_refresh)
-        bl.addLayout(b_row)
-
-        self.status = QLabel("✓ 就绪，请导入照片")
+        self.status = QLabel("就绪 · 请导入人像照片")
         self.status.setObjectName("SubTitle")
         bl.addWidget(self.status)
 
-        left_box.addWidget(bottom_card, 0)
-        splitter.addWidget(left_container)
+        left_v.addWidget(bottom_card)
+        splitter.addWidget(left_box)
 
-        # ----------------- 右侧大预览区 -----------------
+        # ------------------------------------------------ 右侧大预览区
         right_panel = QWidget()
-        right_layout = QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(10, 10, 10, 10)
-        right_layout.setSpacing(6)
+        rl = QVBoxLayout(right_panel)
+        rl.setContentsMargins(12, 12, 12, 12)
+        rl.setSpacing(8)
 
-        header_r = QHBoxLayout()
-        self.lbl_preview_info = QLabel("工作区预览 · 300 DPI")
-        self.lbl_preview_info.setStyleSheet("font-weight: 600; color: #475569;")
-        header_r.addWidget(self.lbl_preview_info)
-        header_r.addStretch()
-        right_layout.addLayout(header_r)
+        preview_card = QFrame(); preview_card.setObjectName("Card")
+        pcl = QVBoxLayout(preview_card); pcl.setContentsMargins(12, 12, 12, 12); pcl.setSpacing(8)
 
-        self.preview_canvas = QLabel()
-        self.preview_canvas.setStyleSheet(
-            "background-color: #eaeef2; border: 1px solid #d0d7de; border-radius: 8px;"
-        )
-        self.preview_canvas.setAlignment(Qt.AlignCenter)
-        self.preview_canvas.setMinimumSize(400, 400)
-        right_layout.addWidget(self.preview_canvas, 1)
+        self.preview_info = QLabel("等待导入照片…")
+        self.preview_info.setStyleSheet("font-weight: 600; color: #1f2937;")
+        pcl.addWidget(self.preview_info)
 
-        self.lbl_footer_info = QLabel("输出分辨率: -- · 300 DPI")
-        self.lbl_footer_info.setObjectName("SubTitle")
-        self.lbl_footer_info.setAlignment(Qt.AlignCenter)
-        right_layout.addWidget(self.lbl_footer_info)
+        self.preview = QLabel()
+        self.preview.setAlignment(Qt.AlignCenter)
+        self.preview.setStyleSheet("background-color: #f1f5f9; border-radius: 6px; border: 1px solid #e2e8f0;")
+        pcl.addWidget(self.preview, 1)
 
+        self.lbl_dims = QLabel("输出分辨率: -- · 300 DPI")
+        self.lbl_dims.setObjectName("SubTitle")
+        self.lbl_dims.setAlignment(Qt.AlignCenter)
+        pcl.addWidget(self.lbl_dims)
+
+        rl.addWidget(preview_card)
         splitter.addWidget(right_panel)
+
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        main_layout.addWidget(splitter)
+        self.setCentralWidget(splitter)
 
-    # ----------------- 交互逻辑 -----------------
-    def _populate_sizes(self):
-        self.size_combo.blockSignals(True)
-        self.size_combo.clear()
-        for s in core.load_sizes():
-            self.size_combo.addItem(f"{s['name']}", s)
-        self.size_combo.blockSignals(False)
-
-    def on_search_changed(self, text):
-        matches = core.search_sizes(text)
-        self.size_combo.blockSignals(True)
-        self.size_combo.clear()
-        for s in matches:
-            self.size_combo.addItem(f"{s['name']}", s)
-        self.size_combo.blockSignals(False)
-        self.on_size_changed()
-
-    def on_size_changed(self):
-        s = self.size_combo.currentData()
-        if s:
-            self.lbl_spec_badge.setText(f"规格: {s['w_mm']} × {s['h_mm']} mm · {s['w_px']} × {s['h_px']} px @ 300DPI")
-        self.schedule_render()
-
-    def on_color_changed(self, btn_id):
-        self.schedule_render()
-
-    def pick_custom_color(self):
-        col = QColorDialog.getColor(QColor(67, 142, 219), self, "选择证件照自定义底色")
-        if col.isValid():
-            rgb = (col.red(), col.green(), col.blue())
-            hex_c = col.name()
-            custom_dict = {"key": "custom", "name": f"自定义 ({hex_c})", "rgb": rgb, "hex": hex_c}
-            self.colors_data.append(custom_dict)
-            self.schedule_render()
-
-    def reset_framing(self):
-        self.slider_zoom.setValue(100)
-        self.slider_pos_y.setValue(0)
-        self.schedule_render()
-
-    def on_mode_changed(self, idx):
-        self.ori_container.setVisible(idx in (1, 3, 4))
-        self.paper_container.setVisible(idx in (1, 3, 4))
-        self.mix_container.setVisible(idx == 2)
-        self.custom_mix_container.setVisible(idx == 3)
-        self.grid_container.setVisible(idx == 4)
-        self.opt_aux_box.setVisible(idx != 0)
-        self.schedule_render()
-
+    # ------------------------------------------------ 事件与交互
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
-            self.dropbox.setProperty("dragOver", True)
-            self.dropbox.style().polish(self.dropbox)
+            self.dropbox.setStyleSheet("background-color: #e0f2fe; border: 1px solid #0969da;")
 
     def dragLeaveEvent(self, event):
-        self.dropbox.setProperty("dragOver", False)
-        self.dropbox.style().polish(self.dropbox)
+        self.dropbox.setStyleSheet("")
 
     def dropEvent(self, event: QDropEvent):
-        self.dropbox.setProperty("dragOver", False)
-        self.dropbox.style().polish(self.dropbox)
+        self.dropbox.setStyleSheet("")
         urls = event.mimeData().urls()
         if urls:
-            path = urls[0].toLocalFile()
-            ext = os.path.splitext(path)[1].lower()
-            if ext in [".jpg", ".jpeg", ".png", ".webp", ".bmp"]:
-                self.set_photo(path)
+            p = urls[0].toLocalFile()
+            if p and os.path.exists(p):
+                self.set_photo(p)
 
     def select_photo(self):
-        last_dir = self.settings.value("last_dir", "")
-        p, _ = QFileDialog.getOpenFileName(
-            self, "选择人像照片", last_dir, "图片文件 (*.jpg *.jpeg *.png *.webp *.bmp)"
-        )
+        last_dir = self.settings.value("last_dir", os.path.expanduser("~/Pictures"))
+        p, _ = QFileDialog.getOpenFileName(self, "选择人像照片", last_dir, "图片 (*.jpg *.jpeg *.png *.webp *.bmp)")
         if p:
             self.settings.setValue("last_dir", os.path.dirname(p))
             self.set_photo(p)
 
     def set_photo(self, p):
-        self.input_path = p
         from PIL import Image
         try:
-            self.raw_pil_image = Image.open(p)
-            self.active_pil_image = self.raw_pil_image.copy()
-        except Exception:
-            return
-
-        self.cached_rgba = None
-        self.current_preview_image = None
-        self.current_single_id = None
-
-        fname = os.path.basename(p)
-        self.lbl_filename.setText(fname)
-        self.lbl_filesize.setText(f"原图: {self.raw_pil_image.size[0]} × {self.raw_pil_image.size[1]} px")
-
-        thumb = self.raw_pil_image.copy()
-        thumb.thumbnail((48, 48), Image.LANCZOS)
-        qimg = pil_to_qimage(thumb)
-        self.lbl_thumb.setPixmap(QPixmap.fromImage(qimg).scaled(48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-
-        self.btn_crop.setEnabled(True)
-        self.btn_reset_crop.setEnabled(True)
-
-        self._start_matting_for_active_image()
+            img = Image.open(p)
+            self.input_path = p
+            self.raw_pil_image = img.copy()
+            self.active_pil_image = img.copy()
+            self.lbl_filename.setText(os.path.basename(p))
+            self.lbl_filesize.setText(f"{img.size[0]} × {img.size[1]} px · 原始照片")
+            self.lbl_thumb.setPixmap(pil_to_pixmap(img).scaled(48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            self.btn_crop.setEnabled(True)
+            self.btn_reset_crop.setEnabled(True)
+            self._start_matting_for_active_image()
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"无法载入照片：{e}")
 
     def open_crop_dialog(self):
         if not self.raw_pil_image:
@@ -1279,7 +1222,6 @@ class MainWindow(QMainWindow):
         mode_idx = self.mode_combo.currentIndex()
         extra_params = {}
 
-        # 相纸朝向
         ori = self.ori_combo.currentData() or "auto"
         extra_params["orientation"] = ori
 
@@ -1289,7 +1231,7 @@ class MainWindow(QMainWindow):
                 extra_params["rows"] = self.spin_rows.value()
                 extra_params["cols"] = self.spin_cols.value()
         elif mode_idx == 2:
-            extra_params["mix_type"] = self.mix_combo.currentData() or "6in_landscape_4_6"
+            extra_params["mix_type"] = self.mix_combo.currentData() or "6in_landscape_4_8"
         elif mode_idx == 3:
             extra_params["paper"] = self.paper_combo.currentData() or core.load_papers()[1]
             extra_params["counts"] = {
@@ -1299,163 +1241,183 @@ class MainWindow(QMainWindow):
                 "l_2in": self.spin_l2in.value(),
             }
 
-        cut_lines = self.chk_cut_lines.isChecked()
-        add_text = self.chk_add_text.isChecked()
-
-        zoom_val = self.slider_zoom.value() / 100.0 # 0.7 ~ 1.4
-        pos_y_val = self.slider_pos_y.value() / 100.0 # -0.2 ~ +0.2
+        zoom_val = self.slider_zoom.value() / 100.0
+        pos_y_val = self.slider_pos_y.value() / 100.0
 
         self._render_req_id += 1
         worker = RenderWorker(
             active_img, size_dict, color_dict, mode_idx, extra_params,
-            cut_lines, add_text, cached_rgba=self.cached_rgba, req_id=self._render_req_id,
+            self.chk_cut_lines.isChecked(), self.chk_add_text.isChecked(),
+            self.cached_rgba, self._render_req_id,
             zoom_ratio=zoom_val, offset_y_ratio=pos_y_val, offset_x_ratio=0.0
         )
         self._running_threads.append(worker)
-
         worker.done.connect(self.on_render_done)
         worker.error.connect(self.on_render_error)
         worker.finished.connect(lambda w=worker: self._cleanup_thread(w))
         worker.start()
 
-    def _cleanup_thread(self, thread_obj):
-        if thread_obj in self._running_threads:
-            self._running_threads.remove(thread_obj)
+    def _cleanup_thread(self, thread):
+        if thread in self._running_threads:
+            self._running_threads.remove(thread)
 
-    def on_render_done(self, result_image, info_text, is_single, single_id_image, req_id):
+    def on_render_done(self, img, info, is_single, single_id_img, req_id):
         if req_id != self._render_req_id:
             return
-        self.current_preview_image = result_image
-        self.current_single_id = single_id_image
-        self.is_single_preview = is_single
+        self.current_preview_image = img
+        self.current_single_id = single_id_img
+        self.is_single_view = is_single
 
-        self.lbl_preview_info.setText(info_text)
-        self.lbl_footer_info.setText(f"输出分辨率: {result_image.size[0]} × {result_image.size[1]} px · 300 DPI")
-        self.status.setText("✓ 渲染完成，可直接导出")
-        self._update_preview_display()
+        self.preview_info.setText(info)
+        self.lbl_dims.setText(f"输出分辨率: {img.size[0]} × {img.size[1]} px · 300 DPI")
 
-    def on_render_error(self, err, req_id):
+        vw = max(100, self.preview.width() - 20)
+        vh = max(100, self.preview.height() - 20)
+
+        pix = pil_to_pixmap(img)
+        scaled_pix = pix.scaled(vw, vh, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self.preview.setPixmap(scaled_pix)
+
+    def on_render_error(self, err_msg, req_id):
         if req_id != self._render_req_id:
             return
-        self.status.setText("渲染出错")
-        self.lbl_preview_info.setText(f"错误: {err[:60]}")
+        self.status.setText("渲染异常")
+        self.preview_info.setText(f"❌ 错误：{err_msg}")
 
-    def _update_preview_display(self):
-        if not self.current_preview_image:
-            return
-        qimg = pil_to_qimage(self.current_preview_image)
-        pixmap = QPixmap.fromImage(qimg)
+    def on_color_changed(self, btn_id):
+        self.schedule_render()
 
-        cw = max(100, self.preview_canvas.width() - 24)
-        ch = max(100, self.preview_canvas.height() - 24)
-        scaled_pix = pixmap.scaled(cw, ch, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    def pick_custom_color(self):
+        c = QColorDialog.getColor(QColor("#ffffff"), self, "选取自定义证件照底色")
+        if c.isValid():
+            rgb = (c.red(), c.green(), c.blue())
+            hex_c = c.name()
+            custom_data = {"key": "custom", "name": f"自定义 ({hex_c})", "rgb": rgb, "hex": hex_c}
+            if len(self.colors_data) > 6:
+                self.colors_data[6] = custom_data
+            else:
+                self.colors_data.append(custom_data)
+            btn = self.color_btn_group.button(self.color_btn_group.buttons()[-1].id() if hasattr(self.color_btn_group.buttons()[-1], 'id') else 0)
+            self.color_btn_group.buttons()[-1].setChecked(True)
+            self.schedule_render()
 
-        bordered_pixmap = QPixmap(scaled_pix.size() + QSize(4, 4))
-        bordered_pixmap.fill(Qt.transparent)
+    def on_mode_changed(self, idx):
+        self.paper_container.setVisible(idx in (1, 3, 4))
+        self.ori_container.setVisible(idx in (1, 3, 4))
+        self.mix_container.setVisible(idx == 2)
+        self.custom_mix_container.setVisible(idx == 3)
+        self.grid_container.setVisible(idx == 4)
+        self.opt_aux_box.setVisible(idx != 0)
+        self.schedule_render()
 
-        painter = QPainter(bordered_pixmap)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.setPen(QPen(QColor("#94a3b8"), 1))
-        painter.setBrush(QColor("#ffffff"))
-        painter.drawRect(0, 0, scaled_pix.width() + 1, scaled_pix.height() + 1)
-        painter.drawPixmap(1, 1, scaled_pix)
-        painter.end()
-
-        self.preview_canvas.setPixmap(bordered_pixmap)
+    def reset_framing(self):
+        self.slider_zoom.setValue(100)
+        self.slider_pos_y.setValue(0)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._update_preview_display()
+        if self.current_preview_image:
+            vw = max(100, self.preview.width() - 20)
+            vh = max(100, self.preview.height() - 20)
+            pix = pil_to_pixmap(self.current_preview_image)
+            scaled_pix = pix.scaled(vw, vh, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.preview.setPixmap(scaled_pix)
 
-    def export_result(self):
+    def export_image(self):
         if not self.current_preview_image:
-            QMessageBox.warning(self, "提示", "请先导入照片并生成预览后再导出！")
+            QMessageBox.warning(self, "提示", "请先导入照片并生成预览")
             return
 
-        last_dir = self.settings.value("last_export_dir", os.path.expanduser("~/Desktop"))
-        out_dir = QFileDialog.getExistingDirectory(self, "选择保存文件夹", last_dir)
-        if not out_dir:
+        last_dir = self.settings.value("last_dir", os.path.expanduser("~/Pictures"))
+        d = QFileDialog.getExistingDirectory(self, "选择保存文件夹", last_dir)
+        if not d:
             return
+        self.settings.setValue("last_dir", d)
 
-        self.settings.setValue("last_export_dir", out_dir)
-        base_name = os.path.splitext(os.path.basename(self.input_path or "照片"))[0]
-        size_name = self.size_combo.currentData()["name"].split(" ")[0]
-        export_fmt = self.combo_export_fmt.currentData()
+        base_name = "证件照"
+        if self.input_path:
+            base_name = os.path.splitext(os.path.basename(self.input_path))[0]
+
+        s_dict = self.size_combo.currentData() or core.load_sizes()[0]
+        s_name = s_dict["name"]
+        color_id = self.color_btn_group.checkedId()
+        c_dict = self.colors_data[color_id] if (0 <= color_id < len(self.colors_data)) else self.colors_data[0]
+        c_name = c_dict["name"].split(" ")[0]
+
+        exp_fmt = self.combo_export_fmt.currentData()
 
         saved_files = []
         try:
-            if self.is_single_preview:
-                p_png = os.path.join(out_dir, f"{base_name}_{size_name}_单张.png")
-                p_jpg = os.path.join(out_dir, f"{base_name}_{size_name}_单张.jpg")
-                if export_fmt in ("both", "png"):
+            if self.is_single_view:
+                p_png = os.path.join(d, f"{base_name}_{s_name}_{c_name}_单张.png")
+                p_jpg = os.path.join(d, f"{base_name}_{s_name}_{c_name}_单张.jpg")
+                if exp_fmt in ("both", "png"):
                     self.current_preview_image.save(p_png, "PNG")
                     saved_files.append(p_png)
-                if export_fmt in ("both", "jpg"):
+                if exp_fmt in ("both", "jpg"):
                     self.current_preview_image.save(p_jpg, "JPEG", quality=95)
                     saved_files.append(p_jpg)
             else:
-                mode_name = self.mode_combo.currentText().split(" ")[1]
-                p_sheet_png = os.path.join(out_dir, f"{base_name}_{size_name}_{mode_name}_排版.png")
-                p_sheet_jpg = os.path.join(out_dir, f"{base_name}_{size_name}_{mode_name}_排版.jpg")
-                if export_fmt in ("both", "png"):
+                p_sheet_png = os.path.join(d, f"{base_name}_{s_name}_{c_name}_相纸冲印排版.png")
+                p_sheet_jpg = os.path.join(d, f"{base_name}_{s_name}_{c_name}_相纸冲印排版.jpg")
+                if exp_fmt in ("both", "png"):
                     self.current_preview_image.save(p_sheet_png, "PNG")
                     saved_files.append(p_sheet_png)
-                if export_fmt in ("both", "jpg"):
+                if exp_fmt in ("both", "jpg"):
                     self.current_preview_image.save(p_sheet_jpg, "JPEG", quality=95)
                     saved_files.append(p_sheet_jpg)
 
                 if self.current_single_id:
-                    p_single_png = os.path.join(out_dir, f"{base_name}_{size_name}_单张.png")
-                    p_single_jpg = os.path.join(out_dir, f"{base_name}_{size_name}_单张.jpg")
-                    if export_fmt in ("both", "png"):
-                        self.current_single_id.save(p_single_png, "PNG")
-                        saved_files.append(p_single_png)
-                    if export_fmt in ("both", "jpg"):
-                        self.current_single_id.save(p_single_jpg, "JPEG", quality=95)
-                        saved_files.append(p_single_jpg)
+                    p_s_png = os.path.join(d, f"{base_name}_{s_name}_{c_name}_高清单张.png")
+                    p_s_jpg = os.path.join(d, f"{base_name}_{s_name}_{c_name}_高清单张.jpg")
+                    if exp_fmt in ("both", "png"):
+                        self.current_single_id.save(p_s_png, "PNG")
+                        saved_files.append(p_s_png)
+                    if exp_fmt in ("both", "jpg"):
+                        self.current_single_id.save(p_s_jpg, "JPEG", quality=95)
+                        saved_files.append(p_s_jpg)
 
             QMessageBox.information(
                 self, "导出成功",
-                f"已成功导出照片到：\n{out_dir}\n\n共生成 {len(saved_files)} 份文件。"
+                f"已成功保存 {len(saved_files)} 份高清文件至：\n{d}\n\n文件列表：\n" + "\n".join([os.path.basename(f) for f in saved_files])
             )
+            self.status.setText(f"✓ 已导出至: {os.path.basename(saved_files[0])}")
         except Exception as e:
-            QMessageBox.critical(self, "导出失败", f"保存图片时出错：{e}")
+            QMessageBox.critical(self, "导出失败", f"保存出错：{e}")
 
     def open_batch_dialog(self):
         dlg = BatchDialog(self)
         dlg.exec()
 
-    def open_preset_dialog(self):
-        QMessageBox.information(self, "预设管理", "可以在此处自定义添加你的冲印相纸规格与证件照尺寸。")
-
-    def _load_state(self):
-        geo = self.settings.value("geometry")
-        if geo:
-            self.restoreGeometry(geo)
-
     def closeEvent(self, event):
         self.settings.setValue("geometry", self.saveGeometry())
+        for th in list(self._running_threads):
+            if th.isRunning():
+                th.quit()
+                th.wait(300)
         super().closeEvent(event)
 
 
 def run():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    app.setStyleSheet(QSS)
 
     palette = QPalette()
     palette.setColor(QPalette.Window, QColor("#f6f8fa"))
     palette.setColor(QPalette.WindowText, QColor("#1f2328"))
     palette.setColor(QPalette.Base, QColor("#ffffff"))
     palette.setColor(QPalette.AlternateBase, QColor("#f6f8fa"))
+    palette.setColor(QPalette.ToolTipBase, QColor("#ffffff"))
+    palette.setColor(QPalette.ToolTipText, QColor("#1f2328"))
     palette.setColor(QPalette.Text, QColor("#1f2328"))
     palette.setColor(QPalette.Button, QColor("#ffffff"))
     palette.setColor(QPalette.ButtonText, QColor("#1f2328"))
     palette.setColor(QPalette.Highlight, QColor("#0969da"))
     palette.setColor(QPalette.HighlightedText, QColor("#ffffff"))
     app.setPalette(palette)
-    app.setStyleSheet(QSS)
 
-    icon_path = os.path.join(PROJECT_ROOT, "app.icns" if sys.platform == "darwin" else "app.ico")
+    icon_path = os.path.join(PROJECT_ROOT, "app.icns") if sys.platform == "darwin" else os.path.join(PROJECT_ROOT, "app.ico")
     if os.path.exists(icon_path):
         app.setWindowIcon(QIcon(icon_path))
 
@@ -1463,6 +1425,7 @@ def run():
     w.show()
     w.raise_()
     w.activateWindow()
+
     sys.exit(app.exec())
 
 
