@@ -27,7 +27,11 @@ USER_WEIGHTS_DIR = os.path.join(USER_CONFIG_DIR, "weights")
 DPI = 300
 PX_PER_MM = DPI / 25.4
 
-MODEL_NAME = "modnet_photographic_portrait_matting.onnx"
+MODEL_NAMES = [
+    "hivision_modnet.onnx",
+    "modnet_photographic_portrait_matting.onnx",
+    "rmbg_quantized.onnx"
+]
 
 
 def mm_to_px(mm):
@@ -296,24 +300,24 @@ class Matting:
 
     @staticmethod
     def _locate_model():
-        """三级回退找模型：包内 _MEIPASS → 项目 weights → 用户目录。任一命中即用。"""
+        """三级回退找模型：包内 _MEIPASS → 项目 weights → 用户目录。优先命中精调模型。"""
         cands = Matting.model_search_paths()
         for p in cands:
             if os.path.exists(p):
                 return p
-        # 全没有，返回用户目录路径（available() 判 False，给清晰提示）
-        return cands[-1]
+        return cands[-1] if cands else os.path.join(USER_WEIGHTS_DIR, MODEL_NAMES[0])
 
     @staticmethod
     def model_search_paths():
-        """返回所有查找路径，用于错误诊断。"""
+        """返回所有查找路径（按模型优先级排列），用于错误诊断。"""
         paths = []
-        if getattr(sys, "frozen", False):
-            base = getattr(sys, "_MEIPASS", None)
-            if base:
-                paths.append(os.path.join(base, "weights", MODEL_NAME))
-        paths.append(os.path.join(PROJECT_ROOT, "weights", MODEL_NAME))
-        paths.append(os.path.join(USER_WEIGHTS_DIR, MODEL_NAME))
+        for name in MODEL_NAMES:
+            if getattr(sys, "frozen", False):
+                base = getattr(sys, "_MEIPASS", None)
+                if base:
+                    paths.append(os.path.join(base, "weights", name))
+            paths.append(os.path.join(PROJECT_ROOT, "weights", name))
+            paths.append(os.path.join(USER_WEIGHTS_DIR, name))
         return paths
 
     def available(self):
@@ -339,15 +343,15 @@ class Matting:
         inp = sess.get_inputs()[0]
         orig_w, orig_h = image.size
 
-        # MODNet 固定输入 512x512。必须等比缩放 + pad，不能直接拉伸到 512x512，
-        # 否则人脸会被压扁/拉长（这是之前输出变形的根本原因）。
-        target = 512
+        # 检查是否为 RMBG 模型
+        is_rmbg = "rmbg" in os.path.basename(self.model_path).lower()
+        target = 1024 if is_rmbg else 512
+
         scale = target / max(orig_w, orig_h)
         new_w = max(1, int(round(orig_w * scale)))
         new_h = max(1, int(round(orig_h * scale)))
 
         resized = image.resize((new_w, new_h), Image.BILINEAR).convert("RGB")
-        # pad 到 512x512，使用 ImageNet 均值灰（模型训练常见填充）
         pad_left = (target - new_w) // 2
         pad_top = (target - new_h) // 2
         pad_right = target - new_w - pad_left
@@ -356,20 +360,29 @@ class Matting:
         padded.paste(resized, (pad_left, pad_top))
 
         arr = np.asarray(padded, dtype=np.float32)
-        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-        std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-        arr = (arr / 255.0 - mean) / std
+        if is_rmbg:
+            arr = (arr / 255.0 - 0.5) / 1.0
+        else:
+            mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+            std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+            arr = (arr / 255.0 - mean) / std
         arr = arr.transpose(2, 0, 1)[None, ...]
 
         out = sess.run(None, {inp.name: arr})[0]
         alpha_full = out[0, 0] if out.ndim == 4 else out[0]
-        alpha_full = (np.clip(alpha_full, 0, 1) * 255).astype(np.uint8)
+        if is_rmbg:
+            alpha_min, alpha_max = float(alpha_full.min()), float(alpha_full.max())
+            if alpha_max > alpha_min:
+                alpha_full = (alpha_full - alpha_min) / (alpha_max - alpha_min)
+            alpha_full = (np.clip(alpha_full, 0, 1) * 255).astype(np.uint8)
+        else:
+            alpha_full = (np.clip(alpha_full, 0, 1) * 255).astype(np.uint8)
 
         # 去掉 padding，还原到等比缩放后的尺寸
         alpha_crop = alpha_full[pad_top:pad_top + new_h, pad_left:pad_left + new_w]
         alpha = Image.fromarray(alpha_crop, mode="L").resize((orig_w, orig_h), Image.LANCZOS)
 
-        # 轻微 morph 闭运算清理边缘噪点
+        # 轻微清理边缘噪点
         alpha = alpha.filter(ImageFilter.MaxFilter(3)).filter(ImageFilter.MinFilter(3))
 
         rgba = image.convert("RGBA")

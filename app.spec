@@ -90,6 +90,12 @@ app = BUNDLE(
     icon=ICON,
     bundle_identifier="com.idphotostudio.desktop",
     info_plist={
+        "CFBundleName": "证件照工作室",
+        "CFBundleDisplayName": "证件照工作室",
+        "CFBundleIdentifier": "com.idphotostudio.desktop",
+        "CFBundleVersion": "2.0.0",
+        "CFBundleShortVersionString": "2.0.0",
+        "CFBundleIconFile": "app.icns",
         "NSHighResolutionCapable": True,
         "NSPrincipalClass": "NSApplication",
     },
