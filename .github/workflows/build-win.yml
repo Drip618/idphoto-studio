@@ -37,18 +37,20 @@ jobs:
           $src = "dist\证件照工作室"
 
           # 1) 权重必须打进包（否则换背景功能完全失效）
+          # 注意：PyInstaller 6+ onedir 把所有 datas 打进 _internal/ 子目录，
+          # 故权重实际位于 <根>/_internal/weights/，而非顶层 weights/。
           $weights = @("rmbg_quantized.onnx","hivision_modnet.onnx","modnet_photographic_portrait_matting.onnx")
           foreach ($w in $weights) {
-            $p = Join-Path $src "weights\$w"
+            $p = Join-Path $src "_internal\weights\$w"
             if (-not (Test-Path $p)) { Write-Error "[FATAL] 缺失权重: $p —— 打包配置异常，禁止产出空壳包"; exit 1 }
             $sz = (Get-Item $p).Length
             Write-Host "OK  weights/$w  size=$sz"
           }
 
           # 2) onnxruntime 必须打进包（否则无法抠图）
-          $ort = Get-ChildItem (Join-Path $src "_internal") -Recurse -Filter "onnxruntime.dll" | Select-Object -First 1
-          if (-not $ort) { Write-Error "[FATAL] 缺失 onnxruntime.dll —— 打包配置异常，禁止产出"; exit 1 }
-          Write-Host "OK  onnxruntime.dll  size=$($ort.Length)"
+          $ortdir = Join-Path $src "_internal\onnxruntime"
+          if (-not (Test-Path $ortdir)) { Write-Error "[FATAL] 缺失 onnxruntime 目录 —— 打包配置异常，禁止产出"; exit 1 }
+          Write-Host "OK  onnxruntime 目录存在"
 
           # 3) 打印 ORT 版本（须与 Mac 验证版 1.27.0 一致）
           python -c "import onnxruntime as o; print('ORT_VERSION='+o.__version__)"
