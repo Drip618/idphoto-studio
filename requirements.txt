@@ -1,5 +1,7 @@
 # 运行依赖
+# onnxruntime 必须锁版本：rmbg_quantized.onnx 是 INT8 量化模型，对 ORT 版本极敏感；
+# 锁 1.27.0 与已验证可用的 Mac 版完全一致，避免 Windows 云端装到新版导致抠图退化。
 PySide6>=6.6.0
 Pillow>=10.0.0
-onnxruntime>=1.16.0
+onnxruntime==1.27.0
 numpy>=1.24.0

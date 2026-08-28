@@ -780,6 +780,20 @@ class MainWindow(QMainWindow):
         self.init_ui()
         self.load_user_settings()
 
+        # 启动自检：模型漏打/量化不兼容会在这里明确报错，而不是静默出废片
+        QTimer.singleShot(400, self._run_startup_diagnostic)
+
+    def _run_startup_diagnostic(self):
+        try:
+            log_path = core.write_diagnostic_report()
+            ok, msg = core.Matting().self_check()
+            if not ok:
+                detail = ("抠图模型自检未通过，换背景功能将无法正常工作。\n\n"
+                          "原因：%s\n\n诊断日志：%s") % (msg, log_path or "(无法写入)")
+                QMessageBox.critical(self, "模型异常 · 无法换背景", detail)
+        except Exception:
+            pass
+
     def init_ui(self):
         self.splitter = QSplitter(Qt.Horizontal)
         self.splitter.setHandleWidth(4)

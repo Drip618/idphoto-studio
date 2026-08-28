@@ -1,5 +1,8 @@
 # Build Windows — 云端 Windows 自动打包，Mac 上只管 push 代码
 # 产物：绿色免安装 zip（必出）+ NSIS 安装器（可选，失败不阻断）
+#
+# 关键保障：打包完成后硬性校验权重与 onnxruntime 已打进包，
+# 缺失则直接构建失败（exit 1），绝不再产出"空壳包"（即换背景失效的废片）。
 name: Build Windows
 
 on:
@@ -22,15 +25,44 @@ jobs:
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt pyinstaller
+          pip install -r requirements.txt "pyinstaller>=6.0,<7"
 
       - name: PyInstaller 打包
         run: pyinstaller win_app.spec --noconfirm --clean --distpath dist --workpath build
 
+      - name: 硬校验 + 改名 + 打印清单
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $src = "dist\证件照工作室"
+
+          # 1) 权重必须打进包（否则换背景功能完全失效）
+          $weights = @("rmbg_quantized.onnx","hivision_modnet.onnx","modnet_photographic_portrait_matting.onnx")
+          foreach ($w in $weights) {
+            $p = Join-Path $src "weights\$w"
+            if (-not (Test-Path $p)) { Write-Error "[FATAL] 缺失权重: $p —— 打包配置异常，禁止产出空壳包"; exit 1 }
+            $sz = (Get-Item $p).Length
+            Write-Host "OK  weights/$w  size=$sz"
+          }
+
+          # 2) onnxruntime 必须打进包（否则无法抠图）
+          $ort = Get-ChildItem (Join-Path $src "_internal") -Recurse -Filter "onnxruntime.dll" | Select-Object -First 1
+          if (-not $ort) { Write-Error "[FATAL] 缺失 onnxruntime.dll —— 打包配置异常，禁止产出"; exit 1 }
+          Write-Host "OK  onnxruntime.dll  size=$($ort.Length)"
+
+          # 3) 打印 ORT 版本（须与 Mac 验证版 1.27.0 一致）
+          python -c "import onnxruntime as o; print('ORT_VERSION='+o.__version__)"
+
+          # 4) 重命名为 ASCII，避免 zip 内中文路径乱码导致解压异常
+          Move-Item $src "dist\IDPhotoStudio"
+          Rename-Item "dist\IDPhotoStudio\证件照工作室.exe" "IDPhotoStudio.exe"
+          Write-Host "已重命名为 ASCII 输出: IDPhotoStudio"
+
       - name: 打包绿色版 zip（必出）
+        shell: pwsh
         run: |
           cd dist
-          Compress-Archive -Path 证件照工作室 -DestinationPath ../证件照工作室_Win绿色版.zip
+          Compress-Archive -Path IDPhotoStudio -DestinationPath ..\证件照工作室_Win绿色版.zip -Force
           cd ..
 
       - name: 上传绿色版 zip

@@ -260,6 +260,98 @@ class Matting:
         rgba.putalpha(alpha)
         return rgba
 
+    # ---- 启动自检：模型是否真的可用（防止打包漏模型却静默出废片）----
+    def self_check(self, test_size=64):
+        """返回 (ok, message)。用合成图验证模型能产出非退化的 alpha。"""
+        if not self.available():
+            return False, "模型文件缺失，未打进包或未下载：\n%s" % self.model_path
+        try:
+            import onnxruntime as ort
+        except Exception as e:
+            return False, "onnxruntime 未安装/无法导入：%s" % e
+        try:
+            self._ensure_session()
+        except Exception as e:
+            return False, "模型加载失败（可能 ORT 版本不兼容量化算子）：%s" % e
+        try:
+            from PIL import Image, ImageDraw
+            img = Image.new("RGB", (test_size, test_size), (0, 0, 0))
+            d = ImageDraw.Draw(img)
+            r = test_size // 4
+            d.ellipse([test_size // 2 - r, test_size // 2 - r,
+                       test_size // 2 + r, test_size // 2 + r], fill=(255, 255, 255))
+            rgba = self.remove(img)
+            alpha = rgba.split()[-1]
+            a = np.asarray(alpha, dtype=np.float32)
+            fg = float((a > 128).mean())
+            bg = float((a < 128).mean())
+            mean_v = float(a.mean())
+            if fg < 0.02 or bg < 0.02:
+                return False, "模型输出退化（alpha 几乎全前景/全背景，抠图失效）：fg=%.3f bg=%.3f" % (fg, bg)
+            if not (20 <= mean_v <= 240):
+                return False, "模型输出异常（alpha 均值越界）：mean=%.1f" % mean_v
+            return True, "OK (fg=%.3f bg=%.3f mean=%.1f)" % (fg, bg, mean_v)
+        except Exception as e:
+            return False, "自检推理异常：%s" % e
+
+    @staticmethod
+    def model_md5():
+        try:
+            import hashlib
+            p = Matting._locate_model()
+            if not os.path.exists(p):
+                return "(缺失)"
+            h = hashlib.md5()
+            with open(p, "rb") as f:
+                for chunk in iter(lambda: f.read(1 << 20), b""):
+                    h.update(chunk)
+            return h.hexdigest()
+        except Exception as e:
+            return "(读取失败: %s)" % e
+
+
+def app_diagnostic_dir():
+    """诊断日志目录：打包后放在 exe 同目录，开发态放项目根。"""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return PROJECT_ROOT
+
+
+def write_diagnostic_report(extra_lines=None):
+    """写一份启动诊断报告到日志文件，便于远端排错。返回日志路径或 None。"""
+    try:
+        import onnxruntime as ort
+        ort_ver = ort.__version__
+        ort_prov = ",".join(ort.get_available_providers())
+    except Exception as e:
+        ort_ver = "(未安装: %s)" % e
+        ort_prov = "-"
+    m = Matting()
+    ok, msg = m.self_check()
+    import datetime
+    lines = [
+        "===== 证件照工作室 启动诊断 =====",
+        "时间: %s" % datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "系统: %s" % (sys.platform),
+        "onnxruntime 版本: %s" % ort_ver,
+        "onnxruntime 后端: %s" % ort_prov,
+        "模型路径: %s" % m.model_path,
+        "模型可用: %s" % m.available(),
+        "模型 MD5: %s" % Matting.model_md5(),
+        "自检结果: %s | %s" % ("通过" if ok else "失败", msg),
+    ]
+    if extra_lines:
+        lines += extra_lines
+    try:
+        d = app_diagnostic_dir()
+        os.makedirs(d, exist_ok=True)
+        log_path = os.path.join(d, "idphoto_diagnose.log")
+        with open(log_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        return log_path
+    except Exception:
+        return None
+
 
 # ============================================================ 照相馆自然标准半身胸像裁剪算法
 def create_standard_id_photo(rgba, target_w, target_h, bg_rgb, zoom_ratio=1.0, offset_y_ratio=0.0, offset_x_ratio=0.0):
